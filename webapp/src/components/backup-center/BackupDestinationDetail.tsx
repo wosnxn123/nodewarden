@@ -399,6 +399,28 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
               </label>
             </div>
           ) : null}
+                {props.selectedDestination.type === 'microsoft_graph' ? (
+          <div className="field-grid">
+            <label className="field field-span-2">
+              <span>{t('txt_backup_webdav_path')}</span>
+              <input
+                className="input"
+                value={(props.selectedDestination.destination as MicrosoftGraphBackupDestination).rootPath || ''}
+                disabled={props.loadingSettings || props.disableWhileBusy}
+                placeholder="nodewarden-backups"
+                onInput={(event) => props.onUpdateDestination((destination) => ({
+                  ...destination,
+                  destination: {
+                    ...(destination.destination as MicrosoftGraphBackupDestination),
+                    rootPath: (event.currentTarget as HTMLInputElement).value,
+                  },
+                }))}
+              />
+            </label>
+            <p className="helper-text field-span-2">未配置 Microsoft Graph Secrets 时，执行/刷新会失败。</p>
+          </div>
+        ) : null}
+
 
           {props.selectedDestination.type === 's3' ? (
             <div className="field-grid">
@@ -498,28 +520,6 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
               </label>
             </div>
           ) : null}
-        {props.selectedDestination.type === 'microsoft_graph' ? (
-          <>
-            <label className="form-field">
-              <span>远程目录</span>
-              <input
-                value={(props.selectedDestination.destination as MicrosoftGraphBackupDestination).rootPath || 'nodewarden-backups'}
-                placeholder="nodewarden-backups"
-                onInput={(event) =>
-                  props.onUpdateDestination((destination) => ({
-                    ...destination,
-                    destination: {
-                      ...(destination.destination as MicrosoftGraphBackupDestination),
-                      rootPath: (event.currentTarget as HTMLInputElement).value,
-                    },
-                  }))
-                }
-              />
-            </label>
-            <p className="helper-text">未配置 Microsoft Graph Secrets 时，执行/刷新会失败。</p>
-          </>
-        ) : null}
-
 
           <RemoteBackupBrowser
             canBrowse={props.canBrowseSelectedDestination}

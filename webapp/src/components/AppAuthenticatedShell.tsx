@@ -1,4 +1,4 @@
-import { ArrowUpDown, Cloud, Clock3, Folder as FolderIcon, KeyRound, Lock, LogOut, Send as SendIcon, Settings as SettingsIcon, Shield, ShieldUser } from 'lucide-preact';
+import { ArrowUpDown, Cloud, Clock3, Database, Folder as FolderIcon, KeyRound, Lock, LogOut, Send as SendIcon, Settings as SettingsIcon, Shield, ShieldUser } from 'lucide-preact';
 import { Link } from 'wouter';
 import AppMainRoutes from '@/components/AppMainRoutes';
 import ThemeSwitch from '@/components/ThemeSwitch';
@@ -108,6 +108,13 @@ export default function AppAuthenticatedShell(props: AppAuthenticatedShellProps)
                 <span>{t('nav_backup_strategy')}</span>
               </Link>
             )}
+  {isAdmin && (
+    <Link href="/settings/storage" className={`side-link ${props.location === '/settings/storage' ? 'active' : ''}`}>
+      <Database size={16} />
+      <span>存储库设置</span>
+    </Link>
+  )}
+
             <Link href={props.importRoute} className={`side-link ${props.isImportRoute ? 'active' : ''}`}>
               <ArrowUpDown size={14} />
               <span>{t('nav_import_export')}</span>

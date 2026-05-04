@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'preact/compat';
 import { useEffect } from 'preact/hooks';
 import { Link, Route, Switch } from 'wouter';
-import { ArrowUpDown, Cloud, LogOut, Settings as SettingsIcon, Shield, ShieldUser } from 'lucide-preact';
+import { ArrowUpDown, Cloud, Database, LogOut, Settings as SettingsIcon, Shield, ShieldUser } from 'lucide-preact';
 import type { ImportAttachmentFile, ImportResultSummary } from '@/components/ImportPage';
 import LoadingState from '@/components/LoadingState';
 import type { AdminBackupImportResponse, AdminBackupRunResponse, AdminBackupSettings, RemoteBackupBrowserResponse } from '@/lib/api/backup';
@@ -9,6 +9,7 @@ import type { CiphersImportPayload } from '@/lib/api/vault';
 import { t } from '@/lib/i18n';
 import type { AdminInvite, AdminUser, AuthorizedDevice, Cipher, Folder as VaultFolder, Profile, Send, SendDraft, SessionState, VaultDraft } from '@/lib/types';
 import type { ExportRequest } from '@/lib/export-formats';
+import type { AuthedFetch } from '@/lib/api/shared';
 
 const VaultPage = lazy(() => import('@/components/VaultPage'));
 const SendsPage = lazy(() => import('@/components/SendsPage'));
@@ -17,6 +18,7 @@ const SettingsPage = lazy(() => import('@/components/SettingsPage'));
 const SecurityDevicesPage = lazy(() => import('@/components/SecurityDevicesPage'));
 const AdminPage = lazy(() => import('@/components/AdminPage'));
 const BackupCenterPage = lazy(() => import('@/components/BackupCenterPage'));
+const StorageSettingsPage = lazy(() => import('@/components/StorageSettingsPage'));
 const ImportPage = lazy(() => import('@/components/ImportPage'));
 
 function RouteContentFallback() {
@@ -31,6 +33,7 @@ function LegacyBackupRedirect(props: { onNavigate: (path: string) => void }) {
 }
 
 export interface AppMainRoutesProps {
+  authedFetch: AuthedFetch;
   profile: Profile | null;
   profileLoading: boolean;
   session: SessionState | null;
@@ -284,6 +287,13 @@ export default function AppMainRoutes(props: AppMainRoutesProps) {
                   <span>{t('nav_backup_strategy')}</span>
                 </Link>
               )}
+  {isAdmin && (
+    <Link href="/settings/storage" className="mobile-settings-link">
+      <Database size={18} />
+      <span>存储库设置</span>
+    </Link>
+  )}
+
             </div>
             <button type="button" className="btn btn-secondary mobile-settings-logout" onClick={props.onLogout}>
               <LogOut size={14} className="btn-icon" />
@@ -354,6 +364,25 @@ export default function AppMainRoutes(props: AppMainRoutesProps) {
       <Route path="/help">
         <LegacyBackupRedirect onNavigate={props.onNavigate} />
       </Route>
+      
+      <Route path="/settings/storage">
+        {isAdmin ? (
+          <div className="stack">
+            {props.mobileLayout && (
+              <div className="mobile-settings-subhead">
+                <button type="button" className="btn btn-secondary small mobile-settings-back" onClick={() => props.onNavigate(props.settingsHomeRoute)}>
+                  <span className="btn-icon" aria-hidden="true">{"<"}</span>
+                  {t('txt_back')}
+                </button>
+              </div>
+            )}
+            <Suspense fallback={<RouteContentFallback />}>
+              <StorageSettingsPage authedFetch={props.authedFetch} onNotify={props.onNotify} />
+            </Suspense>
+          </div>
+        ) : null}
+      </Route>
+
       <Route path="/backup">
         {isAdmin ? (
           <div className="stack">

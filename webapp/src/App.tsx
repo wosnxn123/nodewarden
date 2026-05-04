@@ -82,6 +82,7 @@ const APP_ROUTE_PATHS = [
   '/admin',
   '/security/devices',
   '/backup',
+  '/settings/storage',
   '/settings',
   SETTINGS_ACCOUNT_ROUTE,
   '/help',
@@ -1219,6 +1220,7 @@ export default function App() {
     if (location === '/admin') return t('nav_admin_panel');
     if (location === '/security/devices') return t('nav_device_management');
     if (location === '/backup') return t('nav_backup_strategy');
+    if (location === '/settings/storage') return '存储库设置';
     if (isImportRoute) return t('nav_import_export');
     if (location === SETTINGS_ACCOUNT_ROUTE) return t('nav_account_settings');
     if (location === SETTINGS_HOME_ROUTE) return t('txt_settings');
@@ -1236,7 +1238,7 @@ export default function App() {
   }, [phase, isImportHashRoute, location, navigate]);
 
   useEffect(() => {
-    if (phase === 'app' && !isAdminProfile(profile) && location === '/backup' && !profileQuery.isFetching) {
+    if (phase === 'app' && !isAdminProfile(profile) && (location === '/backup' || location === '/settings/storage') && !profileQuery.isFetching) {
       navigate('/vault');
     }
   }, [phase, profile?.role, profileQuery.isFetching, location, navigate]);
@@ -1248,6 +1250,7 @@ export default function App() {
   }, [phase, mobileLayout, location, navigate]);
 
   const mainRoutesProps = {
+    authedFetch,
     profile,
     profileLoading: profileQuery.isFetching && !profile,
     session,

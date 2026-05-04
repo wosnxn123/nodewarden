@@ -9,6 +9,7 @@ import {
   handleAdminDeleteUser,
 } from './handlers/admin';
 import { handleAdminBackupRoute } from './router-admin-backup';
+import { handleAdminStorageRoute } from './router-admin-storage';
 
 export async function handleAdminRoute(
   request: Request,
@@ -23,6 +24,9 @@ export async function handleAdminRoute(
 
   const adminBackupResponse = await handleAdminBackupRoute(request, env, actorUser, path, method);
   if (adminBackupResponse) return adminBackupResponse;
+
+  const adminStorageResponse = await handleAdminStorageRoute(request, env, actorUser, path, method);
+  if (adminStorageResponse) return adminStorageResponse;
 
   if (path === '/api/admin/invites') {
     if (method === 'GET') return handleAdminListInvites(request, env, actorUser);

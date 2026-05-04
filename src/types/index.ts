@@ -9,6 +9,25 @@ export interface Env {
   ATTACHMENTS?: R2Bucket;
   // Optional fallback for attachment/send file storage (no credit card required).
   ATTACHMENTS_KV?: KVNamespace;
+  /** Attachment / Send file backend selector. Use microsoft_graph to store blobs in Microsoft 365 via Graph. */
+  STORAGE_PROVIDER?: string;
+  ATTACHMENT_STORAGE_PROVIDER?: string;
+  BLOB_STORAGE_PROVIDER?: string;
+  MICROSOFT_GRAPH_TENANT_ID?: string;
+  MICROSOFT_GRAPH_CLIENT_ID?: string;
+  MICROSOFT_GRAPH_CLIENT_SECRET?: string;
+  MICROSOFT_GRAPH_DRIVE_ID?: string;
+  MICROSOFT_GRAPH_ROOT_PATH?: string;
+  GRAPH_TENANT_ID?: string;
+  GRAPH_CLIENT_ID?: string;
+  GRAPH_CLIENT_SECRET?: string;
+  GRAPH_DRIVE_ID?: string;
+  GRAPH_ROOT_PATH?: string;
+  M365_GRAPH_TENANT_ID?: string;
+  M365_GRAPH_CLIENT_ID?: string;
+  M365_GRAPH_CLIENT_SECRET?: string;
+  M365_GRAPH_DRIVE_ID?: string;
+  M365_GRAPH_ROOT_PATH?: string;
   JWT_SECRET: string;
   TOTP_SECRET?: string;
 }

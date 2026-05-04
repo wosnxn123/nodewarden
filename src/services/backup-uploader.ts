@@ -1,10 +1,10 @@
 import type { Env } from '../types';
+import type { MicrosoftGraphBackupDestination } from '../../shared/backup-schema';
 import {
   BackupDestinationRecord,
   BackupDestinationType,
   S3BackupDestination,
   WebDavBackupDestination,
-  MicrosoftGraphBackupDestination,
 } from './backup-config';
 
 export interface BackupUploadResult {

@@ -51,7 +51,7 @@ export function detectBrowserTimeZone(): string {
 }
 
 function createLocalizedDestinationName(type: BackupDestinationType, index: number): string {
-  if (type === 'microsoft_graph') return t('txt_backup_destination_name_default_microsoft_graph', { index: String(index) });
+  if (type === 'microsoft_graph') return `Microsoft 365 ${index}`;
   if (type === 's3') return t('txt_backup_destination_name_default_s3', { index: String(index) });
   return t('txt_backup_destination_name_default_webdav', { index: String(index) });
 }
@@ -208,7 +208,17 @@ export function getFirstVisibleDestinationId(settings: BackupSettings | null | u
 }
 
 export function getDestinationTypeLabel(type: BackupDestinationType): string {
-  if (type === 'microsoft_graph') return t('txt_backup_protocol_microsoft_graph');
+  if (type === 'microsoft_graph') return 'Microsoft 365';
   if (type === 's3') return t('txt_backup_protocol_s3');
   return t('txt_backup_protocol_webdav');
 }
+
+
+export function normalizeBackupDestinationDisplayName(name: string | undefined, type?: BackupDestinationType, index = 1): string {
+  const value = String(name || '').trim();
+  if (!value || value === 'txt_backup_destination_name_default_microsoft_graph') {
+    return type === 'microsoft_graph' ? `Microsoft 365 ${index}` : value;
+  }
+  return value;
+}
+

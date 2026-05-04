@@ -523,7 +523,7 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
         {props.selectedDestination.type === 'microsoft_graph' ? (
           <>
             <label className="form-field">
-              <span>{t('txt_backup_microsoft_graph_root_path')}</span>
+              <span>{'Microsoft 365 远程目录'}</span>
               <input
                 value={(props.selectedDestination.destination as MicrosoftGraphBackupDestination).rootPath || 'nodewarden-backups'}
                 onInput={(event) =>
@@ -537,7 +537,7 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
                 }
               />
             </label>
-            <p className="helper-text">{t('txt_backup_microsoft_graph_uses_secrets')}</p>
+            <p className="helper-text">{'复用 Cloudflare Secrets 中的 Microsoft Graph 凭据，这里只保存备份目录。'}</p>
           </>
         ) : null}
 </>

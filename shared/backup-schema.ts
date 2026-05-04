@@ -2,10 +2,11 @@ export const BACKUP_DEFAULT_TIMEZONE = 'UTC';
 export const BACKUP_DEFAULT_RETENTION_COUNT = 30;
 export const BACKUP_DEFAULT_S3_REGION = 'auto';
 export const BACKUP_DEFAULT_REMOTE_PATH = 'nodewarden';
+export const BACKUP_DEFAULT_GRAPH_REMOTE_PATH = 'nodewarden-backups';
 export const BACKUP_DEFAULT_INTERVAL_HOURS = 24;
 export const BACKUP_DEFAULT_START_TIME = '03:00';
 
-export type BackupDestinationType = 's3' | 'webdav';
+export type BackupDestinationType = 's3' | 'webdav' | 'microsoft_graph';
 
 export interface S3BackupDestination {
   endpoint: string;
@@ -23,9 +24,18 @@ export interface WebDavBackupDestination {
   remotePath: string;
 }
 
+export interface MicrosoftGraphBackupDestination {
+  /**
+   * Folder in the configured Microsoft Graph Drive used for remote backups.
+   * Credentials stay in Cloudflare Secrets and are not saved inside backup settings.
+   */
+  rootPath: string;
+}
+
 export type BackupDestinationConfig =
   | S3BackupDestination
-  | WebDavBackupDestination;
+  | WebDavBackupDestination
+  | MicrosoftGraphBackupDestination;
 
 export interface BackupRuntimeState {
   lastAttemptAt: string | null;
@@ -91,6 +101,9 @@ export function createDefaultBackupScheduleConfig(timezone: string = BACKUP_DEFA
 }
 
 export function createDefaultBackupDestinationConfig(type: BackupDestinationType): BackupDestinationConfig {
+  if (type === 'microsoft_graph') {
+    return { rootPath: BACKUP_DEFAULT_GRAPH_REMOTE_PATH };
+  }
   if (type === 's3') {
     return {
       endpoint: '',
@@ -110,6 +123,7 @@ export function createDefaultBackupDestinationConfig(type: BackupDestinationType
 }
 
 export function createDefaultBackupDestinationName(type: BackupDestinationType, index: number): string {
+  if (type === 'microsoft_graph') return `Microsoft 365 ${index}`;
   if (type === 's3') return `S3 ${index}`;
   return `WebDAV ${index}`;
 }

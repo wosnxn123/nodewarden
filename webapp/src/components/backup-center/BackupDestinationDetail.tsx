@@ -4,6 +4,7 @@ import type {
   RemoteBackupBrowserResponse,
   S3BackupDestination,
   WebDavBackupDestination,
+  MicrosoftGraphBackupDestination,
 } from '@/lib/api/backup';
 import { COMMON_TIME_ZONES, getDestinationTypeLabel } from '@/lib/backup-center';
 import type { RecommendedProvider } from '@/lib/backup-recommendations';
@@ -518,7 +519,28 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
             onPromptDelete={props.onPromptDeleteRemoteBackup}
             onChangePage={props.onChangeRemoteBrowserPage}
           />
-        </>
+        
+        {props.selectedDestination.type === 'microsoft_graph' ? (
+          <>
+            <label className="form-field">
+              <span>{t('txt_backup_microsoft_graph_root_path')}</span>
+              <input
+                value={(props.selectedDestination.destination as MicrosoftGraphBackupDestination).rootPath || 'nodewarden-backups'}
+                onInput={(event) =>
+                  props.onUpdateDestination((destination) => ({
+                    ...destination,
+                    destination: {
+                      ...(destination.destination as MicrosoftGraphBackupDestination),
+                      rootPath: (event.currentTarget as HTMLInputElement).value,
+                    },
+                  }))
+                }
+              />
+            </label>
+            <p className="helper-text">{t('txt_backup_microsoft_graph_uses_secrets')}</p>
+          </>
+        ) : null}
+</>
       )}
     </section>
   );

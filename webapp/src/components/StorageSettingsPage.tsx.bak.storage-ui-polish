@@ -1,0 +1,135 @@
+import { useEffect, useState } from 'preact/hooks';
+import { Cloud, Database, HardDrive, RefreshCw } from 'lucide-preact';
+import { getAdminStorageSettings, testAdminStorage, type AdminStorageSettings } from '@/lib/api/storage';
+import type { AuthedFetch } from '@/lib/api/shared';
+
+interface StorageSettingsPageProps {
+  authedFetch: AuthedFetch;
+  onNotify?: (type: 'success' | 'error' | 'warning', text: string) => void;
+}
+
+function providerLabel(provider: string | null): string {
+  if (provider === 'r2') return 'Cloudflare R2';
+  if (provider === 'kv') return 'Cloudflare KV';
+  if (provider === 'microsoft_graph') return 'Microsoft 365 / Graph Drive';
+  return '未配置';
+}
+
+function StatusBadge(props: { ok: boolean; text: string }) {
+  return <span className={`badge ${props.ok ? 'success' : 'warning'}`}>{props.text}</span>;
+}
+
+export default function StorageSettingsPage(props: StorageSettingsPageProps) {
+  const [settings, setSettings] = useState<AdminStorageSettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [error, setError] = useState('');
+
+  async function load() {
+    setLoading(true);
+    setError('');
+    try {
+      setSettings(await getAdminStorageSettings(props.authedFetch));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '加载存储库设置失败';
+      setError(message);
+      props.onNotify?.('error', message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runTest() {
+    setTesting(true);
+    try {
+      const result = await testAdminStorage(props.authedFetch);
+      if (result.ok) {
+        props.onNotify?.('success', `存储库测试成功：${providerLabel(result.provider)}`);
+      } else {
+        props.onNotify?.('error', result.error || '存储库测试失败');
+      }
+      await load();
+    } catch (err) {
+      props.onNotify?.('error', err instanceof Error ? err.message : '存储库测试失败');
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  if (loading && !settings) {
+    return <section className="card"><div className="muted">正在加载存储库设置...</div></section>;
+  }
+
+  return (
+    <div className="stack storage-settings-page">
+      <section className="card section-card">
+        <div className="section-head">
+          <div>
+            <h2><Database size={20} /> 存储库设置</h2>
+            <p className="muted">这里控制附件和文件 Send 的对象存储；密码库主数据库仍然使用 Cloudflare D1。</p>
+          </div>
+          <div className="toolbar-actions">
+            <button type="button" className="btn btn-secondary small" onClick={() => void load()} disabled={loading}>
+              <RefreshCw size={14} className="btn-icon" /> 刷新
+            </button>
+            <button type="button" className="btn small" onClick={() => void runTest()} disabled={testing || !settings?.currentProvider}>
+              {testing ? '测试中...' : '测试当前存储'}
+            </button>
+          </div>
+        </div>
+        {error && <div className="alert error">{error}</div>}
+        {settings && (
+          <div className="grid two-cols">
+            <div className="card subtle-card">
+              <h3><HardDrive size={18} /> 当前生效后端</h3>
+              <div className="big-value">{providerLabel(settings.currentProvider)}</div>
+              <p className="muted">如果设置了 STORAGE_PROVIDER=microsoft_graph，会优先使用 Microsoft 365 / Graph Drive。</p>
+            </div>
+            <div className="card subtle-card">
+              <h3><Cloud size={18} /> 可用绑定</h3>
+              <div className="stack compact">
+                <StatusBadge ok={settings.r2Configured} text={`R2：${settings.r2Configured ? '已绑定' : '未绑定'}`} />
+                <StatusBadge ok={settings.kvConfigured} text={`KV：${settings.kvConfigured ? '已绑定' : '未绑定'}`} />
+                <StatusBadge ok={settings.microsoftGraph.configured} text={`Microsoft Graph：${settings.microsoftGraph.configured ? '已配置' : '未配置'}`} />
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {settings && (
+        <section className="card section-card">
+          <div className="section-head">
+            <div>
+              <h2>Microsoft 365 / Graph Drive</h2>
+              <p className="muted">推荐使用 SharePoint 站点文档库或专用 Drive，不建议把个人 OneDrive 当作长期系统数据库。</p>
+            </div>
+          </div>
+          <div className="settings-grid">
+            <label><span>STORAGE_PROVIDER</span><input readOnly value={settings.microsoftGraph.provider || '未设置'} /></label>
+            <label><span>Tenant ID</span><input readOnly value={settings.microsoftGraph.tenantId || '未设置'} /></label>
+            <label><span>Client ID</span><input readOnly value={settings.microsoftGraph.clientId || '未设置'} /></label>
+            <label><span>Client Secret</span><input readOnly value={settings.microsoftGraph.clientSecretConfigured ? '已设置，不显示' : '未设置'} /></label>
+            <label><span>Drive ID</span><input readOnly value={settings.microsoftGraph.driveId || '未设置'} /></label>
+            <label><span>Root Path</span><input readOnly value={settings.microsoftGraph.rootPath || 'nodewarden'} /></label>
+          </div>
+          {settings.microsoftGraph.missing.length > 0 && (
+            <div className="alert warning">还缺少：{settings.microsoftGraph.missing.join(', ')}</div>
+          )}
+          <div className="code-card">
+            <pre>{`npx wrangler secret put STORAGE_PROVIDER                 # microsoft_graph
+npx wrangler secret put MICROSOFT_GRAPH_TENANT_ID
+npx wrangler secret put MICROSOFT_GRAPH_CLIENT_ID
+npx wrangler secret put MICROSOFT_GRAPH_CLIENT_SECRET
+npx wrangler secret put MICROSOFT_GRAPH_DRIVE_ID
+npx wrangler secret put MICROSOFT_GRAPH_ROOT_PATH          # 例如 nodewarden`}</pre>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}

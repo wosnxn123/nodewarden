@@ -18,6 +18,7 @@ import {
   type BackupSettings,
   type S3BackupDestination,
   type WebDavBackupDestination,
+  type MicrosoftGraphBackupDestination,
   createBackupRandomId,
   createDefaultBackupDestinationName,
   createDefaultBackupScheduleConfig,
@@ -37,6 +38,7 @@ export type {
   BackupSettings,
   S3BackupDestination,
   WebDavBackupDestination,
+  MicrosoftGraphBackupDestination,
 } from '../../shared/backup-schema';
 
 export interface BackupSettingsInput {
@@ -164,11 +166,20 @@ function normalizeWebDavDestination(value: unknown, allowIncomplete = false): We
   };
 }
 
+function normalizeMicrosoftGraphDestination(value: unknown): MicrosoftGraphBackupDestination {
+  const source = isPlainObject(value) ? value : {};
+  return {
+    rootPath: normalizePath(source.rootPath) || 'nodewarden-backups',
+  };
+}
+
 function normalizeDestination(
   destinationType: BackupDestinationType,
   destination: unknown,
   allowIncomplete = false
 ): BackupDestinationConfig {
+  if (destinationType === 'microsoft_graph') return normalizeMicrosoftGraphDestination(destination);
+  if (destinationType === 'microsoft_graph') return normalizeMicrosoftGraphDestination(destination);
   if (destinationType === 's3') return normalizeS3Destination(destination, allowIncomplete);
   return normalizeWebDavDestination(destination, allowIncomplete);
 }
@@ -205,7 +216,8 @@ function defaultDestinationName(type: BackupDestinationType, index: number): str
 function getDestinationType(raw: unknown): BackupDestinationType {
   const value = asTrimmedString(raw);
   if (value === 'e3') return 's3';
-  if (value === 's3' || value === 'webdav') return value;
+  if (value === 'graph' || value === 'm365' || value === 'onedrive' || value === 'sharepoint') return 'microsoft_graph';
+  if (value === 's3' || value === 'webdav' || value === 'microsoft_graph') return value;
   throw new Error('Backup destination type is invalid');
 }
 
@@ -267,7 +279,7 @@ function parseLegacyBackupSettings(rawValue: Record<string, unknown>, fallbackTi
       : BACKUP_DEFAULT_INTERVAL_HOURS;
   const destinationTypeRaw = asTrimmedString(rawValue.destinationType);
   const destinationType: BackupDestinationType =
-    destinationTypeRaw === 'e3' || destinationTypeRaw === 's3' || destinationTypeRaw === 'webdav'
+    destinationTypeRaw === 'e3' || destinationTypeRaw === 's3' || destinationTypeRaw === 'webdav' || destinationTypeRaw === 'microsoft_graph' || destinationTypeRaw === 'graph' || destinationTypeRaw === 'm365' || destinationTypeRaw === 'microsoft_graph' || destinationTypeRaw === 'graph' || destinationTypeRaw === 'm365'
       ? getDestinationType(destinationTypeRaw)
       : 'webdav';
   const destination = {

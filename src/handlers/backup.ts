@@ -317,7 +317,7 @@ async function executeConfiguredBackup(
         ? 'txt_backup_remote_run_progress_sync_attachments_detail'
         : 'txt_backup_remote_run_progress_sync_attachments_skipped_detail',
     });
-    const remoteSession = createRemoteBackupTransferSession(destination);
+    const remoteSession = createRemoteBackupTransferSession(destination, env);
     if (destination.includeAttachments) {
       await touchLease();
       const remoteAttachmentIndex = await loadRemoteAttachmentIndex(remoteSession);
@@ -395,7 +395,7 @@ async function executeConfiguredBackup(
         stageTitle: 'txt_backup_remote_run_progress_cleanup_title',
         stageDetail: 'txt_backup_remote_run_progress_cleanup_detail',
       });
-      prunedFileCount = await pruneRemoteBackupArchives(destination, destination.schedule.retentionCount, archive.fileName);
+      prunedFileCount = await pruneRemoteBackupArchives(destination, env, destination.schedule.retentionCount, archive.fileName);
     } catch (error) {
       pruneErrorMessage = error instanceof Error ? error.message : 'Old backup cleanup failed';
     }
@@ -702,7 +702,7 @@ export async function handleListAdminRemoteBackups(request: Request, env: Env, a
     const settings = await loadBackupSettings(storage, env, 'UTC');
     const url = new URL(request.url);
     const destination = requireBackupDestination(settings, url.searchParams.get('destinationId') || null);
-    const listing = await listRemoteBackupEntries(destination, url.searchParams.get('path') || '');
+    const listing = await listRemoteBackupEntries(destination, env, url.searchParams.get('path') || '');
     return jsonResponse({
       object: 'backup-remote-browser',
       destinationId: destination.id,
@@ -723,7 +723,7 @@ export async function handleDownloadAdminRemoteBackup(request: Request, env: Env
     const url = new URL(request.url);
     const path = ensureRemoteRestoreCandidate(url.searchParams.get('path') || '');
     const destination = requireBackupDestination(settings, url.searchParams.get('destinationId') || null);
-    const remoteFile = await downloadRemoteBackupFile(destination, path);
+    const remoteFile = await downloadRemoteBackupFile(destination, env, path);
     return new Response(remoteFile.bytes, {
       status: 200,
       headers: {
@@ -746,7 +746,7 @@ export async function handleInspectAdminRemoteBackup(request: Request, env: Env,
     const url = new URL(request.url);
     const path = ensureRemoteRestoreCandidate(url.searchParams.get('path') || '');
     const destination = requireBackupDestination(settings, url.searchParams.get('destinationId') || null);
-    const remoteFile = await downloadRemoteBackupFile(destination, path);
+    const remoteFile = await downloadRemoteBackupFile(destination, env, path);
     const integrity = await inspectBackupArchiveFileNameChecksum(remoteFile.bytes, remoteFile.fileName || path);
     return jsonResponse({
       object: 'backup-remote-integrity',
@@ -769,7 +769,7 @@ export async function handleDeleteAdminRemoteBackup(request: Request, env: Env, 
     const url = new URL(request.url);
     const path = ensureRemoteRestoreCandidate(url.searchParams.get('path') || '');
     const destination = requireBackupDestination(settings, url.searchParams.get('destinationId') || null);
-    await deleteRemoteBackupFile(destination, path);
+    await deleteRemoteBackupFile(destination, env, path);
     await writeAuditLog(storage, actorUser.id, 'admin.backup.remote.delete', 'backup', null, {
       ...getBackupDestinationSummary(destination),
       remotePath: path,
@@ -811,7 +811,7 @@ export async function handleRestoreAdminRemoteBackup(request: Request, env: Env,
       },
       targetDeviceIdentifier
     );
-    const remoteFile = await downloadRemoteBackupFile(destination, path);
+    const remoteFile = await downloadRemoteBackupFile(destination, env, path);
     const checksumOk = await verifyBackupArchiveFileNameChecksum(remoteFile.bytes, remoteFile.fileName || path);
     if (!checksumOk && !body.allowChecksumMismatch) {
       return errorResponse('Remote backup file checksum does not match its filename', 400);
@@ -837,7 +837,7 @@ export async function handleRestoreAdminRemoteBackup(request: Request, env: Env,
         !!body.replaceExisting,
         {
             loadAttachment: async (blobName) => {
-              const file = await downloadRemoteBackupFile(destination, `attachments/${blobName}`).catch(() => null);
+              const file = await downloadRemoteBackupFile(destination, env, `attachments/${blobName}`).catch(() => null);
               return file?.bytes || null;
             },
         },

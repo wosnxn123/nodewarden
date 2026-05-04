@@ -1,8 +1,10 @@
+import type { Env } from '../types';
 import {
   BackupDestinationRecord,
   BackupDestinationType,
   S3BackupDestination,
   WebDavBackupDestination,
+  MicrosoftGraphBackupDestination,
 } from './backup-config';
 
 export interface BackupUploadResult {
@@ -229,7 +231,8 @@ function buildWebDavUrl(baseUrl: string, relativePath: string): string {
   return normalized ? `${trimmedBase}/${encodePathSegments(normalized)}` : trimmedBase;
 }
 
-function webDavFullPath(config: WebDavBackupDestination, relativePath: string): string {
+function webDavFullPath(config: WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath: string): string {
   return buildJoinedPath(config.remotePath, normalizeRelativePath(relativePath));
 }
 
@@ -278,6 +281,7 @@ async function ensureWebDavDirectoryCached(
 
 async function putToWebDav(
   config: WebDavBackupDestination,
+  MicrosoftGraphBackupDestination,
   relativePath: string,
   bytes: Uint8Array,
   options: RemoteBackupFilePutOptions = {},
@@ -310,7 +314,8 @@ async function putToWebDav(
   }
 }
 
-async function uploadToWebDav(config: WebDavBackupDestination, archive: Uint8Array, fileName: string): Promise<BackupUploadResult> {
+async function uploadToWebDav(config: WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, archive: Uint8Array, fileName: string): Promise<BackupUploadResult> {
   await putToWebDav(config, fileName, archive, { contentType: 'application/zip' });
   return {
     provider: 'webdav',
@@ -328,7 +333,8 @@ function parseWebDavResponsePath(baseUrl: string, href: string): string {
   return entryPath.startsWith(`${basePath}/`) ? entryPath.slice(basePath.length + 1) : entryPath;
 }
 
-async function listWebDavEntries(config: WebDavBackupDestination, relativePath: string): Promise<RemoteBackupListResult> {
+async function listWebDavEntries(config: WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath: string): Promise<RemoteBackupListResult> {
   const currentPath = normalizeRelativePath(relativePath);
   const targetFullPath = webDavFullPath(config, currentPath);
   const authHeader = toBasicAuthHeader(config.username, config.password);
@@ -393,7 +399,8 @@ async function listWebDavEntries(config: WebDavBackupDestination, relativePath: 
   };
 }
 
-async function downloadFromWebDav(config: WebDavBackupDestination, relativePath: string): Promise<RemoteBackupFile> {
+async function downloadFromWebDav(config: WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath: string): Promise<RemoteBackupFile> {
   const normalized = normalizeRelativePath(relativePath);
   if (!normalized || normalized.endsWith('/')) {
     throw new Error('Please select a backup file');
@@ -418,7 +425,8 @@ async function downloadFromWebDav(config: WebDavBackupDestination, relativePath:
   };
 }
 
-async function deleteFromWebDav(config: WebDavBackupDestination, relativePath: string): Promise<void> {
+async function deleteFromWebDav(config: WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath: string): Promise<void> {
   const authHeader = toBasicAuthHeader(config.username, config.password);
   const remotePath = webDavFullPath(config, relativePath);
   const response = await fetch(buildWebDavUrl(config.baseUrl, remotePath), {
@@ -432,7 +440,8 @@ async function deleteFromWebDav(config: WebDavBackupDestination, relativePath: s
   }
 }
 
-async function existsInWebDav(config: WebDavBackupDestination, relativePath: string): Promise<boolean> {
+async function existsInWebDav(config: WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath: string): Promise<boolean> {
   const authHeader = toBasicAuthHeader(config.username, config.password);
   const remotePath = webDavFullPath(config, relativePath);
   const response = await fetch(buildWebDavUrl(config.baseUrl, remotePath), {
@@ -628,8 +637,215 @@ async function existsInS3(config: S3BackupDestination, relativePath: string): Pr
   return true;
 }
 
+
+function graphEnv(env: Env | undefined, name: string): string {
+  const value = env ? (env as unknown as Record<string, string | undefined>)[name] : '';
+  const normalized = String(value || '').trim();
+  if (!normalized) throw new Error(`${name} is required for Microsoft Graph backups`);
+  return normalized;
+}
+
+function encodePathSegments(path: string): string {
+  return trimSlashes(path)
+    .split('/')
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join('/');
+}
+
+function graphBackupRootPath(config: MicrosoftGraphBackupDestination): string {
+  return trimSlashes(config.rootPath || 'nodewarden-backups') || 'nodewarden-backups';
+}
+
+function graphBackupFullPath(config: MicrosoftGraphBackupDestination, relativePath: string): string {
+  return buildJoinedPath(graphBackupRootPath(config), normalizeRelativePath(relativePath));
+}
+
+async function getMicrosoftGraphToken(env: Env | undefined): Promise<string> {
+  const tenantId = graphEnv(env, 'MICROSOFT_GRAPH_TENANT_ID');
+  const clientId = graphEnv(env, 'MICROSOFT_GRAPH_CLIENT_ID');
+  const clientSecret = graphEnv(env, 'MICROSOFT_GRAPH_CLIENT_SECRET');
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    scope: 'https://graph.microsoft.com/.default',
+    client_secret: clientSecret,
+    grant_type: 'client_credentials',
+  });
+
+  const response = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+
+  const payload = await response.json().catch(() => ({})) as { access_token?: string; error?: string; error_description?: string };
+  if (!response.ok || !payload.access_token) {
+    throw new Error(`Microsoft Graph token failed: ${payload.error_description || payload.error || response.status}`);
+  }
+  return payload.access_token;
+}
+
+function graphDriveId(env: Env | undefined): string {
+  return graphEnv(env, 'MICROSOFT_GRAPH_DRIVE_ID');
+}
+
+function graphItemUrl(env: Env | undefined, fullPath: string): string {
+  return `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(graphDriveId(env))}/root:/${encodePathSegments(fullPath)}`;
+}
+
+function graphContentUrl(env: Env | undefined, fullPath: string): string {
+  return `${graphItemUrl(env, fullPath)}:/content`;
+}
+
+function graphChildrenUrl(env: Env | undefined, fullPath: string): string {
+  const normalized = trimSlashes(fullPath);
+  if (!normalized) {
+    return `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(graphDriveId(env))}/root/children`;
+  }
+  return `${graphItemUrl(env, normalized)}:/children`;
+}
+
+async function graphFetch(
+  env: Env | undefined,
+  method: string,
+  url: string,
+  body?: BodyInit | null,
+  contentType?: string
+): Promise<Response> {
+  const token = await getMicrosoftGraphToken(env);
+  return fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(contentType ? { 'Content-Type': contentType } : {}),
+    },
+    body,
+  });
+}
+
+async function ensureMicrosoftGraphDirectory(env: Env | undefined, directoryPath: string): Promise<void> {
+  const segments = trimSlashes(directoryPath).split('/').filter(Boolean);
+  let parent = '';
+  for (const segment of segments) {
+    const response = await graphFetch(
+      env,
+      'POST',
+      graphChildrenUrl(env, parent),
+      JSON.stringify({
+        name: segment,
+        folder: {},
+        '@microsoft.graph.conflictBehavior': 'fail',
+      }),
+      'application/json'
+    );
+    if (response.ok || response.status === 409) {
+      parent = buildJoinedPath(parent, segment);
+      continue;
+    }
+    throw new Error(`Microsoft Graph directory creation failed: ${response.status}`);
+  }
+}
+
+async function putToMicrosoftGraph(
+  env: Env | undefined,
+  config: MicrosoftGraphBackupDestination,
+  relativePath: string,
+  bytes: Uint8Array,
+  options: RemoteBackupFilePutOptions = {}
+): Promise<void> {
+  const fullPath = graphBackupFullPath(config, relativePath);
+  const directory = parentPath(fullPath);
+  if (directory) await ensureMicrosoftGraphDirectory(env, directory);
+  const response = await graphFetch(
+    env,
+    'PUT',
+    graphContentUrl(env, fullPath),
+    bytes,
+    options.contentType || 'application/octet-stream'
+  );
+  if (!response.ok) {
+    throw new Error(`Microsoft Graph upload failed: ${response.status}`);
+  }
+}
+
+async function listMicrosoftGraphEntries(
+  env: Env | undefined,
+  config: MicrosoftGraphBackupDestination,
+  relativePath: string
+): Promise<RemoteBackupListResult> {
+  const currentPath = normalizeRelativePath(relativePath);
+  const fullPath = graphBackupFullPath(config, currentPath);
+  const items: RemoteBackupItem[] = [];
+  let nextUrl: string | null = graphChildrenUrl(env, fullPath);
+
+  while (nextUrl) {
+    const response = await graphFetch(env, 'GET', nextUrl);
+    if (response.status === 404) {
+      return { provider: 'microsoft_graph', currentPath, parentPath: parentPath(currentPath), items: [] };
+    }
+    if (!response.ok) throw new Error(`Microsoft Graph listing failed: ${response.status}`);
+    const payload = await response.json() as { value?: Array<Record<string, unknown>>; '@odata.nextLink'?: string };
+    for (const entry of payload.value || []) {
+      const name = String(entry.name || '').trim();
+      if (!name) continue;
+      const isDirectory = !!entry.folder;
+      const path = buildJoinedPath(currentPath, name);
+      const size = !isDirectory && Number.isFinite(Number(entry.size)) ? Number(entry.size) : null;
+      const modifiedAt = parseHttpDate(String(entry.lastModifiedDateTime || ''));
+      items.push({ path, name, isDirectory, size, modifiedAt });
+    }
+    nextUrl = payload['@odata.nextLink'] || null;
+  }
+
+  return { provider: 'microsoft_graph', currentPath, parentPath: parentPath(currentPath), items: sortRemoteItems(items) };
+}
+
+async function downloadFromMicrosoftGraph(
+  env: Env | undefined,
+  config: MicrosoftGraphBackupDestination,
+  relativePath: string
+): Promise<RemoteBackupFile> {
+  const normalized = normalizeRelativePath(relativePath);
+  if (!normalized || normalized.endsWith('/')) throw new Error('Please select a backup file');
+  const response = await graphFetch(env, 'GET', graphContentUrl(env, graphBackupFullPath(config, normalized)));
+  if (!response.ok) throw new Error(`Microsoft Graph download failed: ${response.status}`);
+  return {
+    provider: 'microsoft_graph',
+    remotePath: normalized,
+    fileName: basename(normalized) || 'backup.zip',
+    contentType: String(response.headers.get('Content-Type') || 'application/zip').trim() || 'application/zip',
+    bytes: new Uint8Array(await response.arrayBuffer()),
+  };
+}
+
+async function deleteFromMicrosoftGraph(
+  env: Env | undefined,
+  config: MicrosoftGraphBackupDestination,
+  relativePath: string
+): Promise<void> {
+  const normalized = normalizeRelativePath(relativePath);
+  const response = await graphFetch(env, 'DELETE', graphItemUrl(env, graphBackupFullPath(config, normalized)));
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Microsoft Graph delete failed: ${response.status}`);
+  }
+}
+
+async function existsInMicrosoftGraph(
+  env: Env | undefined,
+  config: MicrosoftGraphBackupDestination,
+  relativePath: string
+): Promise<boolean> {
+  const normalized = normalizeRelativePath(relativePath);
+  const response = await graphFetch(env, 'GET', graphItemUrl(env, graphBackupFullPath(config, normalized)));
+  if (response.status === 404) return false;
+  if (!response.ok) throw new Error(`Microsoft Graph existence check failed: ${response.status}`);
+  return true;
+}
+
+
 interface ConfiguredDestinationAdapter {
-  provider: 'webdav' | 's3';
+  provider: BackupDestinationType;
   config: WebDavBackupDestination | S3BackupDestination;
   upload: (config: WebDavBackupDestination | S3BackupDestination, archive: Uint8Array, fileName: string) => Promise<BackupUploadResult>;
   putFile: (config: WebDavBackupDestination | S3BackupDestination, relativePath: string, bytes: Uint8Array, options?: RemoteBackupFilePutOptions) => Promise<void>;
@@ -658,12 +874,19 @@ function resolveConfiguredDestinationAdapter(
     return {
       provider: 'webdav',
       config: destination.destination as WebDavBackupDestination,
-      upload: (config, archive, fileName) => uploadToWebDav(config as WebDavBackupDestination, archive, fileName),
-      putFile: (config, relativePath, bytes, options) => putToWebDav(config as WebDavBackupDestination, relativePath, bytes, options),
-      list: (config, relativePath) => listWebDavEntries(config as WebDavBackupDestination, relativePath),
-      download: (config, relativePath) => downloadFromWebDav(config as WebDavBackupDestination, relativePath),
-      deleteFile: (config, relativePath) => deleteFromWebDav(config as WebDavBackupDestination, relativePath),
-      exists: (config, relativePath) => existsInWebDav(config as WebDavBackupDestination, relativePath),
+  MicrosoftGraphBackupDestination,
+      upload: (config, archive, fileName) => uploadToWebDav(config as WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, archive, fileName),
+      putFile: (config, relativePath, bytes, options) => putToWebDav(config as WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath, bytes, options),
+      list: (config, relativePath) => listWebDavEntries(config as WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath),
+      download: (config, relativePath) => downloadFromWebDav(config as WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath),
+      deleteFile: (config, relativePath) => deleteFromWebDav(config as WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath),
+      exists: (config, relativePath) => existsInWebDav(config as WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, relativePath),
     };
   }
   if (destination.type === 's3') {
@@ -682,14 +905,39 @@ function resolveConfiguredDestinationAdapter(
   throw new Error('Unsupported backup destination type');
 }
 
-export function createRemoteBackupTransferSession(destination: BackupDestinationRecord): RemoteBackupTransferSession {
+export function createRemoteBackupTransferSession(destination: BackupDestinationRecord, env?: Env): RemoteBackupTransferSession {
+  if (destination.type === 'microsoft_graph') {
+    const config = destination.destination as MicrosoftGraphBackupDestination;
+    graphEnv(env, 'MICROSOFT_GRAPH_TENANT_ID');
+    graphEnv(env, 'MICROSOFT_GRAPH_CLIENT_ID');
+    graphEnv(env, 'MICROSOFT_GRAPH_CLIENT_SECRET');
+    graphEnv(env, 'MICROSOFT_GRAPH_DRIVE_ID');
+
+    return {
+      provider: 'microsoft_graph',
+      uploadArchive: async (archive: Uint8Array, fileName: string) => {
+        await putToMicrosoftGraph(env, config, fileName, archive, { contentType: 'application/zip' });
+        return { provider: 'microsoft_graph', remotePath: graphBackupFullPath(config, fileName) };
+      },
+      putFile: async (relativePath: string, bytes: Uint8Array, options: RemoteBackupFilePutOptions = {}) => {
+        await putToMicrosoftGraph(env, config, relativePath, bytes, options);
+      },
+      list: async (relativePath: string) => listMicrosoftGraphEntries(env, config, relativePath),
+      download: async (relativePath: string) => downloadFromMicrosoftGraph(env, config, relativePath),
+      deleteFile: async (relativePath: string) => deleteFromMicrosoftGraph(env, config, relativePath),
+      exists: async (relativePath: string) => existsInMicrosoftGraph(env, config, relativePath),
+    };
+  }
+
+
   const adapter = resolveConfiguredDestinationAdapter(destination);
   const ensuredDirectories = adapter.provider === 'webdav' ? new Set<string>() : null;
 
   const putFile = async (relativePath: string, bytes: Uint8Array, options: RemoteBackupFilePutOptions = {}): Promise<void> => {
     const normalized = normalizeRelativePath(relativePath);
     if (adapter.provider === 'webdav' && ensuredDirectories) {
-      await putToWebDav(adapter.config as WebDavBackupDestination, normalized, bytes, options, ensuredDirectories);
+      await putToWebDav(adapter.config as WebDavBackupDestination,
+  MicrosoftGraphBackupDestination, normalized, bytes, options, ensuredDirectories);
       return;
     }
     await adapter.putFile(adapter.config, normalized, bytes, options);
@@ -717,37 +965,39 @@ export function createRemoteBackupTransferSession(destination: BackupDestination
 export async function uploadBackupArchive(
   destination: BackupDestinationRecord,
   archive: Uint8Array,
-  fileName: string
+  fileName: string,
+  env?: Env
 ): Promise<BackupUploadResult> {
-  return createRemoteBackupTransferSession(destination).uploadArchive(archive, fileName);
+  return createRemoteBackupTransferSession(destination, env).uploadArchive(archive, fileName);
 }
 
-export async function listRemoteBackupEntries(destination: BackupDestinationRecord, relativePath: string): Promise<RemoteBackupListResult> {
-  return createRemoteBackupTransferSession(destination).list(relativePath);
+export async function listRemoteBackupEntries(destination: BackupDestinationRecord, env: Env | undefined, relativePath: string): Promise<RemoteBackupListResult> {
+  return createRemoteBackupTransferSession(destination, env).list(relativePath);
 }
 
-export async function downloadRemoteBackupFile(destination: BackupDestinationRecord, relativePath: string): Promise<RemoteBackupFile> {
-  return createRemoteBackupTransferSession(destination).download(relativePath);
+export async function downloadRemoteBackupFile(destination: BackupDestinationRecord, env: Env | undefined, relativePath: string): Promise<RemoteBackupFile> {
+  return createRemoteBackupTransferSession(destination, env).download(relativePath);
 }
 
-export async function deleteRemoteBackupFile(destination: BackupDestinationRecord, relativePath: string): Promise<void> {
+export async function deleteRemoteBackupFile(destination: BackupDestinationRecord, env: Env | undefined, relativePath: string): Promise<void> {
   const normalized = ensureRemoteRestoreCandidate(relativePath);
-  await createRemoteBackupTransferSession(destination).deleteFile(normalized);
+  await createRemoteBackupTransferSession(destination, env).deleteFile(normalized);
 }
 
-export async function remoteBackupFileExists(destination: BackupDestinationRecord, relativePath: string): Promise<boolean> {
+export async function remoteBackupFileExists(destination: BackupDestinationRecord, env: Env | undefined, relativePath: string): Promise<boolean> {
   const normalized = normalizeRelativePath(relativePath);
-  return createRemoteBackupTransferSession(destination).exists(normalized);
+  return createRemoteBackupTransferSession(destination, env).exists(normalized);
 }
 
 export async function uploadRemoteBackupFile(
   destination: BackupDestinationRecord,
+  env: Env | undefined,
   relativePath: string,
   bytes: Uint8Array,
   options: RemoteBackupFilePutOptions = {}
 ): Promise<void> {
   const normalized = normalizeRelativePath(relativePath);
-  await createRemoteBackupTransferSession(destination).putFile(normalized, bytes, options);
+  await createRemoteBackupTransferSession(destination, env).putFile(normalized, bytes, options);
 }
 
 function compareBackupItemsByRecency(a: RemoteBackupItem, b: RemoteBackupItem, preferredFileName?: string): number {
@@ -764,6 +1014,7 @@ function compareBackupItemsByRecency(a: RemoteBackupItem, b: RemoteBackupItem, p
 
 export async function pruneRemoteBackupArchives(
   destination: BackupDestinationRecord,
+  env: Env | undefined,
   retentionCount: number | null,
   preferredFileName?: string
 ): Promise<number> {

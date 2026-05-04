@@ -521,25 +521,8 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
           />
         
         {props.selectedDestination.type === 'microsoft_graph' ? (
-          <section
-            className="backup-m365-section"
-            style={{
-              display: 'grid',
-              gap: '12px',
-              marginTop: '16px',
-              padding: '16px',
-              border: '1px solid rgba(148, 163, 184, 0.22)',
-              borderRadius: '16px',
-              background: 'rgba(148, 163, 184, 0.06)',
-            }}
-          >
-            <div style={{ display: 'grid', gap: '6px' }}>
-              <strong>Microsoft 365 / Graph Drive</strong>
-              <p className="helper-text" style={{ margin: 0, lineHeight: 1.6 }}>
-                备份会写入你配置的 Microsoft Graph Drive。Tenant ID、Client ID、Client Secret、Drive ID 只从 Cloudflare Secrets 读取；这里不会保存密钥。
-              </p>
-            </div>
-            <label className="form-field" style={{ display: 'grid', gap: '8px', margin: 0 }}>
+          <>
+            <label className="form-field">
               <span>远程目录</span>
               <input
                 value={(props.selectedDestination.destination as MicrosoftGraphBackupDestination).rootPath || 'nodewarden-backups'}
@@ -555,10 +538,8 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
                 }
               />
             </label>
-            <p className="helper-text" style={{ margin: 0, lineHeight: 1.6 }}>
-              如果还没有配置 MICROSOFT_GRAPH_TENANT_ID / CLIENT_ID / CLIENT_SECRET / DRIVE_ID，地点可以保存，但浏览远程备份或手动执行时会提示缺少对应 Secret；不会自动退回 WebDAV、S3、KV 或 R2。
-            </p>
-          </section>
+            <p className="helper-text">未配置 Microsoft Graph Secrets 时，执行/刷新会失败。</p>
+          </>
         ) : null}
 </>
       )}

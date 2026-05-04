@@ -216,7 +216,7 @@ export function getDestinationTypeLabel(type: BackupDestinationType): string {
 
 export function normalizeBackupDestinationDisplayName(name: string | undefined, type?: BackupDestinationType, index = 1): string {
   const value = String(name || '').trim();
-  if (!value || value === 'txt_backup_destination_name_default_microsoft_graph') {
+  if (!value || value === 'Microsoft 365') {
     return type === 'microsoft_graph' ? `Microsoft 365 ${index}` : value;
   }
   return value;

@@ -645,14 +645,6 @@ function graphEnv(env: Env | undefined, name: string): string {
   return normalized;
 }
 
-function encodePathSegments(path: string): string {
-  return trimSlashes(path)
-    .split('/')
-    .filter(Boolean)
-    .map(encodeURIComponent)
-    .join('/');
-}
-
 function graphBackupRootPath(config: MicrosoftGraphBackupDestination): string {
   return trimSlashes(config.rootPath || 'nodewarden-backups') || 'nodewarden-backups';
 }

@@ -498,28 +498,6 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
               </label>
             </div>
           ) : null}
-
-          <RemoteBackupBrowser
-            canBrowse={props.canBrowseSelectedDestination}
-            destinationIsSaved={props.selectedDestinationIsSaved}
-            disableWhileBusy={props.disableWhileBusy}
-            loadingRemoteBrowser={props.loadingRemoteBrowser}
-            remoteBrowser={props.remoteBrowser}
-            visibleItems={props.remoteBrowserVisibleItems}
-            currentPage={props.remoteBrowserCurrentPage}
-            totalPages={props.remoteBrowserTotalPages}
-            downloadingRemotePath={props.downloadingRemotePath}
-            downloadingRemotePercent={props.downloadingRemotePercent}
-            restoringRemotePath={props.restoringRemotePath}
-            deletingRemotePath={props.deletingRemotePath}
-            onRefresh={props.onRefreshRemoteBrowser}
-            onShowPath={props.onShowRemoteBrowserPath}
-            onDownload={props.onDownloadRemoteBackup}
-            onRestore={props.onRestoreRemoteBackup}
-            onPromptDelete={props.onPromptDeleteRemoteBackup}
-            onChangePage={props.onChangeRemoteBrowserPage}
-          />
-        
         {props.selectedDestination.type === 'microsoft_graph' ? (
           <>
             <label className="form-field">
@@ -541,7 +519,29 @@ export function BackupDestinationDetail(props: BackupDestinationDetailProps) {
             <p className="helper-text">未配置 Microsoft Graph Secrets 时，执行/刷新会失败。</p>
           </>
         ) : null}
-</>
+
+
+          <RemoteBackupBrowser
+            canBrowse={props.canBrowseSelectedDestination}
+            destinationIsSaved={props.selectedDestinationIsSaved}
+            disableWhileBusy={props.disableWhileBusy}
+            loadingRemoteBrowser={props.loadingRemoteBrowser}
+            remoteBrowser={props.remoteBrowser}
+            visibleItems={props.remoteBrowserVisibleItems}
+            currentPage={props.remoteBrowserCurrentPage}
+            totalPages={props.remoteBrowserTotalPages}
+            downloadingRemotePath={props.downloadingRemotePath}
+            downloadingRemotePercent={props.downloadingRemotePercent}
+            restoringRemotePath={props.restoringRemotePath}
+            deletingRemotePath={props.deletingRemotePath}
+            onRefresh={props.onRefreshRemoteBrowser}
+            onShowPath={props.onShowRemoteBrowserPath}
+            onDownload={props.onDownloadRemoteBackup}
+            onRestore={props.onRestoreRemoteBackup}
+            onPromptDelete={props.onPromptDeleteRemoteBackup}
+            onChangePage={props.onChangeRemoteBrowserPage}
+          />
+        </>
       )}
     </section>
   );

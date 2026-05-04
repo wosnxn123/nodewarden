@@ -1,3 +1,4 @@
+export type { MicrosoftGraphBackupDestination } from '../../shared/backup-schema';
 import type { Env, User } from '../types';
 import { StorageService } from './storage';
 import {

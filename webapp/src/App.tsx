@@ -30,7 +30,7 @@ import {
   parseSignalRTextFrames,
   readInviteCodeFromUrl,
 } from '@/lib/app-support';
-import { preloadAuthenticatedWorkspace } from '@/lib/app-preload';
+import { preloadAuthenticatedWorkspace, preloadDemoExperience } from '@/lib/app-preload';
 import {
   bootstrapAppSession,
   type CompletedLogin,
@@ -54,7 +54,21 @@ import { APP_NOTIFY_EVENT, type AppNotifyDetail } from '@/lib/app-notify';
 import { dispatchBackupProgress, type BackupProgressDetail } from '@/lib/backup-restore-progress';
 import { decryptSends, decryptVaultCore } from '@/lib/vault-decrypt';
 import { decryptSendsInWorker, decryptVaultCoreInWorker } from '@/lib/vault-worker';
-import type { AppPhase, Cipher, Folder as VaultFolder, Profile, Send, SessionState } from '@/lib/types';
+import {
+  DEMO_CIPHERS,
+  DEMO_ADMIN_INVITES,
+  DEMO_ADMIN_USERS,
+  DEMO_AUTHORIZED_DEVICES,
+  DEMO_FOLDERS,
+  DEMO_SENDS,
+  createDemoBackupSettings,
+  IS_DEMO_MODE,
+  createDemoCompletedLogin,
+  createDemoInitialBootstrapState,
+  createDemoMainRoutesProps,
+} from '@/lib/demo';
+import type { AdminBackupSettings } from '@/lib/api/backup';
+import type { AdminInvite, AdminUser, AppPhase, AuthorizedDevice, Cipher, Folder as VaultFolder, Profile, Send, SessionState } from '@/lib/types';
 import type { VaultCoreSnapshot } from '@/lib/vault-cache';
 
 function isBackupProgressDetail(value: unknown): value is BackupProgressDetail {
@@ -139,9 +153,15 @@ function readSessionTimeoutAction(): SessionTimeoutAction {
 }
 
 export default function App() {
-  const initialBootstrap = useMemo(() => readInitialAppBootstrapState(), []);
+  const initialBootstrap = useMemo(
+    () => (IS_DEMO_MODE ? createDemoInitialBootstrapState() : readInitialAppBootstrapState()),
+    []
+  );
   const initialInviteCode = useMemo(() => readInviteCodeFromUrl(), []);
-  const initialProfileSnapshot = useMemo(() => loadProfileSnapshot(initialBootstrap.session?.email), [initialBootstrap]);
+  const initialProfileSnapshot = useMemo(
+    () => (IS_DEMO_MODE ? null : loadProfileSnapshot(initialBootstrap.session?.email)),
+    [initialBootstrap]
+  );
   const queryClient = useQueryClient();
   const [pendingAuthAction, setPendingAuthAction] = useState<'login' | 'register' | 'unlock' | null>(null);
   const [location, navigate] = useLocation();
@@ -193,6 +213,10 @@ export default function App() {
   const [decryptedFolders, setDecryptedFolders] = useState<VaultFolder[]>([]);
   const [decryptedCiphers, setDecryptedCiphers] = useState<Cipher[]>([]);
   const [decryptedSends, setDecryptedSends] = useState<Send[]>([]);
+  const [demoUsers, setDemoUsers] = useState<AdminUser[]>(() => DEMO_ADMIN_USERS.map((user) => ({ ...user })));
+  const [demoInvites, setDemoInvites] = useState<AdminInvite[]>(() => DEMO_ADMIN_INVITES.map((invite) => ({ ...invite })));
+  const [demoAuthorizedDevices, setDemoAuthorizedDevices] = useState<AuthorizedDevice[]>(() => DEMO_AUTHORIZED_DEVICES.map((device) => ({ ...device })));
+  const [demoBackupSettings, setDemoBackupSettings] = useState<AdminBackupSettings>(() => createDemoBackupSettings());
   const [cachedVaultCore, setCachedVaultCore] = useState<VaultCoreSnapshot | null>(null);
   const [vaultInitialDecryptDone, setVaultInitialDecryptDone] = useState(false);
   const [vaultDecryptError, setVaultDecryptError] = useState('');
@@ -295,6 +319,7 @@ export default function App() {
   }, [themePreference]);
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     saveProfileSnapshot(profile);
   }, [profile]);
 
@@ -375,6 +400,22 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (IS_DEMO_MODE) {
+      const currentHashPath = typeof window !== 'undefined'
+        ? (window.location.hash || '').replace(/^#/, '').split('?')[0].split('#')[0]
+        : '';
+      const normalizedCurrentHashPath = currentHashPath.replace(/^\/+/, '').replace(/\/+$/, '');
+      const isDemoPublicSendRoute = /^send\/[^/]+(?:\/[^/]+)?$/i.test(normalizedCurrentHashPath);
+      setDefaultKdfIterations(initialBootstrap.defaultKdfIterations);
+      setJwtWarning(null);
+      setSession(null);
+      setProfile(null);
+      setPhase('login');
+      setUnlockPreparing(false);
+      if (!isDemoPublicSendRoute && location !== '/login') navigate('/login');
+      return;
+    }
+
     let mounted = true;
     (async () => {
       const boot = await bootstrapAppSession(initialBootstrap);
@@ -394,6 +435,7 @@ export default function App() {
 
   useEffect(() => {
     if (phase !== 'locked' || !session) return;
+    if (IS_DEMO_MODE) return;
     let cancelled = false;
     void (async () => {
       const result = await hydrateLockedSession(session, profile);
@@ -442,6 +484,15 @@ export default function App() {
 
   async function handleLogin() {
     if (pendingAuthAction) return;
+    if (IS_DEMO_MODE) {
+      setPendingAuthAction('login');
+      try {
+        await finalizeLogin(createDemoCompletedLogin(loginValues.email), t('txt_login_success'));
+      } finally {
+        setPendingAuthAction(null);
+      }
+      return;
+    }
     if (!loginValues.email || !loginValues.password) {
       pushToast('error', t('txt_please_input_email_and_password'));
       return;
@@ -514,6 +565,12 @@ export default function App() {
 
   async function handleRegister() {
     if (pendingAuthAction) return;
+    if (IS_DEMO_MODE) {
+      pushToast('warning', t('txt_demo_readonly_message'));
+      setPhase('login');
+      navigate('/login');
+      return;
+    }
     if (!registerValues.email || !registerValues.password) {
       pushToast('error', t('txt_please_input_email_and_password'));
       return;
@@ -562,6 +619,10 @@ export default function App() {
 
   async function handleTogglePasswordHint() {
     if (pendingAuthAction) return;
+    if (IS_DEMO_MODE) {
+      openPasswordHintDialog(t('txt_demo_master_password_hint'));
+      return;
+    }
     const email = loginValues.email.trim().toLowerCase();
     if (!email) return;
 
@@ -596,12 +657,21 @@ export default function App() {
 
   function handleShowLockedPasswordHint() {
     if (pendingAuthAction) return;
-    openPasswordHintDialog(profile?.masterPasswordHint ?? null);
+    openPasswordHintDialog((IS_DEMO_MODE ? t('txt_demo_master_password_hint') : profile?.masterPasswordHint) ?? null);
   }
 
   async function handleUnlock() {
     if (pendingAuthAction) return;
     if (!session?.email) return;
+    if (IS_DEMO_MODE) {
+      setPendingAuthAction('unlock');
+      try {
+        await finalizeLogin(createDemoCompletedLogin(session.email), t('txt_unlocked'));
+      } finally {
+        setPendingAuthAction(null);
+      }
+      return;
+    }
     if (!unlockPassword) {
       pushToast('error', t('txt_please_input_master_password'));
       return;
@@ -653,7 +723,9 @@ export default function App() {
   }
 
   function logoutNow() {
-    void revokeCurrentSession(sessionRef.current);
+    if (!IS_DEMO_MODE) {
+      void revokeCurrentSession(sessionRef.current);
+    }
     setConfirm(null);
     setSession(null);
     clearProfileSnapshot();
@@ -759,6 +831,36 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!IS_DEMO_MODE) return;
+    if (phase !== 'app') {
+      setDecryptedFolders([]);
+      setDecryptedCiphers([]);
+      setDecryptedSends([]);
+      setDemoUsers(DEMO_ADMIN_USERS.map((user) => ({ ...user })));
+      setDemoInvites(DEMO_ADMIN_INVITES.map((invite) => ({ ...invite })));
+      setDemoAuthorizedDevices(DEMO_AUTHORIZED_DEVICES.map((device) => ({ ...device })));
+      setDemoBackupSettings(createDemoBackupSettings());
+      setVaultInitialDecryptDone(false);
+      setSendsDecryptDone(false);
+      return;
+    }
+    setDecryptedFolders(DEMO_FOLDERS.map((folder) => ({ ...folder })));
+    setDecryptedCiphers(DEMO_CIPHERS.map((cipher) => ({ ...cipher })));
+    setDecryptedSends(DEMO_SENDS.map((send) => ({ ...send })));
+    setDemoUsers(DEMO_ADMIN_USERS.map((user) => ({ ...user })));
+    setDemoInvites(DEMO_ADMIN_INVITES.map((invite) => ({ ...invite })));
+    setDemoAuthorizedDevices(DEMO_AUTHORIZED_DEVICES.map((device) => ({ ...device })));
+    setDemoBackupSettings(createDemoBackupSettings());
+    setVaultDecryptError('');
+    setVaultInitialDecryptDone(true);
+    setSendsDecryptDone(true);
+  }, [phase]);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE) {
+      setCachedVaultCore(null);
+      return;
+    }
     let cancelled = false;
     if (phase !== 'app' || !session?.symEncKey || !session?.symMacKey || !vaultCacheKey) {
       setCachedVaultCore(null);
@@ -791,7 +893,7 @@ export default function App() {
   const vaultCoreQuery = useQuery({
     queryKey: ['vault-core', vaultCacheKey],
     queryFn: () => loadVaultCoreSyncSnapshot(authedFetch, vaultCacheKey),
-    enabled: phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && !!vaultCacheKey,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && !!vaultCacheKey,
     staleTime: 30_000,
   });
   const encryptedVaultCore = vaultCoreQuery.data || cachedVaultCore;
@@ -802,7 +904,7 @@ export default function App() {
   const sendsQuery = useQuery({
     queryKey: sendsQueryKey,
     queryFn: () => getSends(authedFetch),
-    enabled: phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && location === '/sends' && !encryptedSendsFromSync,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && location === '/sends' && !encryptedSendsFromSync,
     staleTime: 30_000,
   });
   const encryptedSends = sendsQuery.data || encryptedSendsFromSync;
@@ -819,7 +921,7 @@ export default function App() {
   const profileQuery = useQuery({
     queryKey: ['profile', vaultCacheKey || session?.email],
     queryFn: () => getProfile(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.accessToken,
     staleTime: 30_000,
   });
   useEffect(() => {
@@ -831,40 +933,47 @@ export default function App() {
   const usersQuery = useQuery({
     queryKey: ['admin-users', vaultCacheKey],
     queryFn: () => listAdminUsers(authedFetch),
-    enabled: phase === 'app' && isAdmin && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && isAdmin && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
   const invitesQuery = useQuery({
     queryKey: ['admin-invites', vaultCacheKey],
     queryFn: () => listAdminInvites(authedFetch),
-    enabled: phase === 'app' && isAdmin && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && isAdmin && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
   const totpStatusQuery = useQuery({
     queryKey: ['totp-status', vaultCacheKey || session?.email],
     queryFn: () => getTotpStatus(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
   const authorizedDevicesQuery = useQuery({
     queryKey: ['authorized-devices', vaultCacheKey || session?.email],
     queryFn: () => getAuthorizedDevices(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
   useQuery({
     queryKey: ['admin-backup-settings', vaultCacheKey],
     queryFn: () => backupActions.loadSettings(),
-    enabled: phase === 'app' && isAdmin && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && isAdmin && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
 
   useEffect(() => {
+    if (!IS_DEMO_MODE) return;
+    return preloadDemoExperience();
+  }, []);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (phase !== 'app' || !vaultInitialDecryptDone) return;
     void preloadAuthenticatedWorkspace(isAdmin);
   }, [phase, vaultInitialDecryptDone, isAdmin]);
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey) return;
     if (!vaultInitialDecryptDone) return;
     if (!isAdminProfile(profile)) return;
@@ -880,6 +989,7 @@ export default function App() {
   }, [session?.accessToken]);
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (!session?.symEncKey || !session?.symMacKey) {
       setDecryptedFolders([]);
       setDecryptedCiphers([]);
@@ -931,6 +1041,7 @@ export default function App() {
   }, [session?.symEncKey, session?.symMacKey, encryptedFolders, encryptedCiphers]);
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (!session?.symEncKey || !session?.symMacKey) {
       setDecryptedSends([]);
       setSendsDecryptDone(false);
@@ -999,6 +1110,7 @@ export default function App() {
   silentRefreshVaultRef.current = refreshVaultSilently;
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey || !vaultInitialDecryptDone) return;
 
     let disposed = false;
@@ -1351,6 +1463,24 @@ export default function App() {
     onRestoreRemoteBackup: backupActions.restoreRemoteBackup,
     onRestoreRemoteBackupAllowingChecksumMismatch: backupActions.restoreRemoteBackupAllowingChecksumMismatch,
   };
+  const effectiveMainRoutesProps = IS_DEMO_MODE
+    ? createDemoMainRoutesProps(mainRoutesProps, pushToast, {
+        ciphers: decryptedCiphers,
+        folders: decryptedFolders,
+        sends: decryptedSends,
+        users: demoUsers,
+        invites: demoInvites,
+        authorizedDevices: demoAuthorizedDevices,
+        backupSettings: demoBackupSettings,
+        setCiphers: setDecryptedCiphers,
+        setFolders: setDecryptedFolders,
+        setSends: setDecryptedSends,
+        setUsers: setDemoUsers,
+        setInvites: setDemoInvites,
+        setAuthorizedDevices: setDemoAuthorizedDevices,
+        setBackupSettings: setDemoBackupSettings,
+      })
+    : mainRoutesProps;
 
   if (jwtWarning) {
     return <JwtWarningPage reason={jwtWarning.reason} minLength={jwtWarning.minLength} />;
@@ -1397,6 +1527,9 @@ export default function App() {
         <AuthViews
           mode={phase}
           pendingAction={pendingAuthAction}
+          relaxedLoginInput={IS_DEMO_MODE}
+          authPlaceholder={IS_DEMO_MODE ? t('txt_demo_auth_placeholder') : undefined}
+          unlockPlaceholder={IS_DEMO_MODE ? t('txt_demo_unlock_placeholder') : undefined}
           unlockReady={!!session?.email}
           unlockPreparing={unlockPreparing}
           loginValues={loginValues}
@@ -1415,6 +1548,10 @@ export default function App() {
             navigate('/login');
           }}
           onGotoRegister={() => {
+            if (IS_DEMO_MODE) {
+              pushToast('warning', t('txt_demo_readonly_message'));
+              return;
+            }
             if (inviteCodeFromUrl) {
               setRegisterValues((prev) => ({ ...prev, inviteCode: inviteCodeFromUrl }));
             }
@@ -1481,7 +1618,7 @@ export default function App() {
         onLogout={handleLogout}
         onToggleTheme={handleToggleTheme}
         onToggleMobileSidebar={() => setMobileSidebarToggleKey((key) => key + 1)}
-        mainRoutesProps={mainRoutesProps}
+        mainRoutesProps={effectiveMainRoutesProps}
       />
 
       <AppGlobalOverlays

@@ -303,13 +303,48 @@ async function getGraphObject(env: Env, key: string): Promise<BlobObject | null>
   };
 }
 
+async function cleanupGraphSendObjectFolder(env: Env, config: GraphConfig, key: string): Promise<void> {
+  const keySegments = normalizeObjectKeySegments(key);
+
+  // File Send objects are stored as sends/<sendId>/<fileId>.
+  // SharePoint/Graph folders are real DriveItems, unlike R2/KV prefixes, so
+  // after deleting the last file we also remove the one-time sends/<sendId>
+  // folder. This intentionally does not remove the root folder or sends/.
+  if (keySegments.length < 3 || keySegments[0] !== 'sends' || !keySegments[1]) return;
+
+  const sendFolderSegments = [...normalizeRootSegments(config.rootPath), 'sends', keySegments[1]];
+
+  try {
+    const childrenResponse = await graphFetchMaybe(
+      env,
+      graphDrivePath(config, `/root:/${graphPathFromSegments(sendFolderSegments)}:/children?$top=1`),
+    );
+    if (!childrenResponse) return;
+
+    const childrenJson = await childrenResponse.json().catch(() => null) as { value?: unknown[] } | null;
+    if (Array.isArray(childrenJson?.value) && childrenJson.value.length === 0) {
+      await graphFetchMaybe(
+        env,
+        graphDrivePath(config, `/root:/${graphPathFromSegments(sendFolderSegments)}`),
+        { method: 'DELETE' },
+      );
+    }
+  } catch {
+    // Best-effort cosmetic cleanup only. Deleting the file is the important part;
+    // an empty folder left behind should never break Send deletion.
+  }
+}
+
 async function deleteGraphObject(env: Env, key: string): Promise<void> {
   const config = getGraphConfig(env);
   if (!config) throw new Error('Microsoft Graph storage is not configured');
   const segments = graphObjectSegments(config, key);
   if (!segments.length) return;
+
   await graphFetchMaybe(env, graphDrivePath(config, `/root:/${graphPathFromSegments(segments)}`), { method: 'DELETE' });
+  await cleanupGraphSendObjectFolder(env, config, key);
 }
+
 
 export function getBlobStorageKind(env: Env): BlobStorageKind | null {
   const requested = requestedStorageProvider(env);

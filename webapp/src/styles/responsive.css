@@ -760,3 +760,70 @@
     transform: translate(0, 0);
   }
 }
+
+/* Fix mobile horizontal overflow on backup and storage pages */
+@media (max-width: 1180px) {
+  html,
+  body,
+  #app {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .app-page,
+  .app-shell,
+  .app-main,
+  .content,
+  .route-stage {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .route-stage {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .route-stage > *,
+  .stack,
+  .card,
+  .backup-grid,
+  .backup-operations-sidebar,
+  .backup-destination-sidebar,
+  .backup-detail-panel,
+  .settings-subcard,
+  .storage-settings-page {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .backup-grid,
+  .field-grid,
+  .backup-browser-row,
+  .backup-name-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .backup-destination-item,
+  .backup-browser-list,
+  .backup-browser-path,
+  .backup-recommendation-card,
+  .backup-recommendation-dav-item {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-settings-card,
+  .mobile-settings-links,
+  .mobile-settings-link {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+}

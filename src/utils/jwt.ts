@@ -105,6 +105,7 @@ export function createRefreshToken(): string {
 
 // File download token payload
 export interface FileDownloadClaims {
+  userId: string;
   cipherId: string;
   attachmentId: string;
   jti: string;
@@ -122,12 +123,14 @@ export interface AttachmentUploadClaims {
 export async function createFileDownloadToken(
   cipherId: string,
   attachmentId: string,
-  secret: string
+  secret: string,
+  userId: string
 ): Promise<string> {
   const header = { alg: 'HS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
   
   const payload: FileDownloadClaims = {
+    userId,
     cipherId,
     attachmentId,
     jti: createRefreshToken(),
@@ -169,10 +172,15 @@ export async function verifyFileDownloadToken(
     if (!valid) return null;
 
     const payload: FileDownloadClaims = JSON.parse(new TextDecoder().decode(base64UrlDecode(payloadB64)));
-    
-    // Check expiration
+    // Old unbound URLs are deliberately invalid: ownership/membership must be
+    // rechecked for the same requesting actor on every public download.
+    if (!payload || typeof payload.userId !== 'string' || !payload.userId.trim()
+      || typeof payload.cipherId !== 'string' || !payload.cipherId
+      || typeof payload.attachmentId !== 'string' || !payload.attachmentId
+      || typeof payload.jti !== 'string' || !payload.jti
+      || !Number.isFinite(payload.exp)) return null;
     const now = Math.floor(Date.now() / 1000);
-    if (payload.exp < now) return null;
+    if (payload.exp <= now) return null;
 
     return payload;
   } catch {

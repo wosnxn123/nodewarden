@@ -166,8 +166,12 @@ const STORAGE_SCHEMA_VERSION_KEY = 'schema.version';
 // Bump this whenever src/services/storage-schema.ts or migrations/0001_init.sql
 // changes. Existing D1 installs only rerun ensureStorageSchema() when this value
 // differs from config.schema.version.
-const STORAGE_SCHEMA_VERSION = '2026-07-13-refresh-session-reuse';
-const REQUIRED_SCHEMA_TABLES = ['webauthn_credentials', 'webauthn_challenges', 'auth_requests', 'totp_login_replays'] as const;
+const STORAGE_SCHEMA_VERSION = '2026-11-08-organization-ownership';
+const REQUIRED_SCHEMA_TABLES = [
+  'webauthn_credentials', 'webauthn_challenges', 'auth_requests', 'totp_login_replays',
+  'organizations', 'organization_members', 'collections', 'organization_groups', 'organization_group_members',
+  'collection_users', 'collection_groups', 'cipher_collections', 'cipher_user_preferences', 'organization_events',
+] as const;
 
 // D1-backed storage.
 // Contract:
@@ -497,12 +501,12 @@ export class StorageService {
     await saveStoredCipher(this.db, this.safeBind.bind(this), cipher);
   }
 
-  async updateCipherIfUnchanged(cipher: Cipher, expectedUpdatedAt: string): Promise<boolean> {
-    return updateStoredCipherIfUnchanged(this.db, this.safeBind.bind(this), cipher, expectedUpdatedAt);
+  async updateCipherIfUnchanged(cipher: Cipher, expectedUpdatedAt: string, actorUserId?: string, attachments: Attachment[] = []): Promise<boolean> {
+    return updateStoredCipherIfUnchanged(this.db, this.safeBind.bind(this), cipher, expectedUpdatedAt, actorUserId, attachments);
   }
 
-  async deleteCipher(id: string, userId: string): Promise<void> {
-    await deleteStoredCipher(this.db, id, userId);
+  async deleteCipher(id: string, userId: string, expectedUpdatedAt?: string): Promise<boolean> {
+    return deleteStoredCipher(this.db, id, userId, expectedUpdatedAt);
   }
 
   async bulkSoftDeleteCiphers(ids: string[], userId: string): Promise<string | null> {
@@ -601,8 +605,8 @@ export class StorageService {
     await deleteStoredAttachment(this.db, id);
   }
 
-  async deleteAttachmentForUser(id: string, userId: string): Promise<void> {
-    await deleteStoredAttachmentForUser(this.db, id, userId);
+  async deleteAttachmentForUser(id: string, userId: string): Promise<boolean> {
+    return deleteStoredAttachmentForUser(this.db, id, userId);
   }
 
   async bulkDeleteAttachmentsByIds(ids: string[]): Promise<void> {
@@ -633,13 +637,8 @@ export class StorageService {
     await deleteStoredAttachmentsByCipher(this.db, cipherId);
   }
 
-  async updateCipherRevisionDate(cipherId: string): Promise<{ userId: string; revisionDate: string } | null> {
-    return updateStoredCipherRevisionDate(
-      this.getCipher.bind(this),
-      this.saveCipher.bind(this),
-      this.updateRevisionDate.bind(this),
-      cipherId
-    );
+  async updateCipherRevisionDate(cipherId: string, userId: string): Promise<{ userId: string; userIds: string[]; revisionDate: string } | null> {
+    return updateStoredCipherRevisionDate(this.db, cipherId, userId);
   }
 
   // --- Refresh tokens ---

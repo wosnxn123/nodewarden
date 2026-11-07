@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
-import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
+import { SqliteD1 } from './helpers/sqlite-d1';
 import { StorageService } from '../src/services/storage';
 import { handleAuthenticatedRoute } from '../src/router-authenticated';
 import { cipherToResponse } from '../src/handlers/ciphers';
@@ -25,29 +26,15 @@ const encrypt = (value: string) => encryptBw(new TextEncoder().encode(value), en
 async function fixture(ctx: TestContext) {
   // Execute production SQL in a fresh in-memory SQLite database. Only the D1
   // result wrapper and unrelated audit/notification integrations are substituted.
-  const sqlite = new DatabaseSync(':memory:');
-  ctx.after(async () => { await new Promise((resolve) => setImmediate(resolve)); sqlite.close(); });
-  sqlite.exec(`
-    CREATE TABLE ciphers(id TEXT PRIMARY KEY, user_id TEXT, type INTEGER,
-      folder_id TEXT, name TEXT, notes TEXT, favorite INTEGER, data TEXT,
-      reprompt INTEGER, key TEXT, created_at TEXT, updated_at TEXT,
-      archived_at TEXT, deleted_at TEXT);
-    CREATE TABLE attachments(id TEXT PRIMARY KEY, cipher_id TEXT,
-      file_name TEXT, size INTEGER, size_name TEXT, key TEXT);
-    CREATE TABLE devices(user_id TEXT, push_token TEXT);
-  `);
-  const db: any = {
-    prepare(sql: string) {
-      let values: any[] = [];
-      const statement = {
-        bind(...bound: any[]) { values = bound; return statement; },
-        async run() { const result = sqlite.prepare(sql).run(...values); return { success: true, meta: { changes: Number(result.changes) } }; },
-        async all() { return { success: true, results: sqlite.prepare(sql).all(...values) }; },
-        async first() { return sqlite.prepare(sql).get(...values) ?? null; },
-      };
-      return statement;
-    },
-  };
+  const adapter = new SqliteD1();
+  const sqlite = adapter.sqlite;
+  ctx.after(async () => { await new Promise((resolve) => setImmediate(resolve)); adapter.close(); });
+  sqlite.exec(readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
+  for (const userId of [owner, otherOwner]) {
+    sqlite.prepare(`INSERT INTO users(id,email,master_password_hash,key,kdf_type,kdf_iterations,security_stamp,created_at,updated_at)
+      VALUES(?,?,'hash','key',0,600000,'stamp',?,?)`).run(userId, `${userId}@example.test`, revision, revision);
+  }
+  const db = adapter.db;
   ctx.mock.method(StorageService.prototype, 'updateRevisionDate', async () => revision);
   ctx.mock.method(StorageService.prototype, 'createAuditLog', async () => {});
   ctx.mock.method(StorageService.prototype, 'getConfigValue', async () => null);

@@ -7,6 +7,8 @@ export interface SessionState {
   authMode?: 'token' | 'web-cookie';
   symEncKey?: string;
   symMacKey?: string;
+  /** In-memory only; never serialized by saveSession. Replaced on sync and cleared on lock. */
+  organizationKeys?: Record<string, string>;
 }
 
 export interface Profile {
@@ -19,7 +21,59 @@ export interface Profile {
   privateKey?: string | null;
   publicKey?: string | null;
   role: 'admin' | 'user';
+  organizations?: Organization[];
   [k: string]: unknown;
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  key: string | null;
+  type: number;
+  status?: number;
+  enabled?: boolean;
+  billingEmail?: string;
+  [key: string]: unknown;
+}
+
+export interface OrganizationAssignment {
+  id: string;
+  readOnly: boolean;
+  hidePasswords: boolean;
+  manage?: boolean;
+}
+
+export interface OrganizationCollection {
+  id: string;
+  organizationId: string;
+  name: string;
+  decName?: string;
+  readOnly?: boolean;
+  hidePasswords?: boolean;
+  manage?: boolean;
+  users?: OrganizationAssignment[];
+  groups?: OrganizationAssignment[];
+}
+
+export interface OrganizationMember {
+  id: string;
+  userId: string | null;
+  email: string;
+  name?: string;
+  type: number;
+  status: number;
+  accessAll: boolean;
+  publicKey?: string | null;
+  collections?: OrganizationAssignment[];
+  groups?: string[];
+}
+
+export interface OrganizationInvitation {
+  id: string;
+  organizationId: string;
+  organizationName: string;
+  email: string;
+  status: number;
 }
 
 export interface Folder {
@@ -240,6 +294,12 @@ export interface CipherPasswordHistoryEntry {
 export interface Cipher {
   id: string;
   type: number;
+  organizationId?: string | null;
+  collectionIds?: string[];
+  edit?: boolean;
+  viewPassword?: boolean;
+  permissions?: { delete?: boolean; restore?: boolean; [key: string]: unknown };
+  decryptionUnavailable?: boolean;
   folderId?: string | null;
   favorite?: boolean;
   reprompt?: number;
@@ -327,6 +387,8 @@ export interface VaultDraftField {
 export interface VaultDraft {
   id?: string;
   revisionDate?: string;
+  organizationId?: string | null;
+  collectionIds?: string[];
   type: number;
   favorite: boolean;
   name: string;

@@ -9,7 +9,112 @@
 // - If the new table stores persistent data, update the backup export/import
 //   contract in src/services/backup-archive.ts and backup-import.ts.
 // - Keep statements idempotent; D1 may execute them again on later requests.
+const CIPHER_COLUMNS = `id TEXT PRIMARY KEY, user_id TEXT, organization_id TEXT, type INTEGER NOT NULL, folder_id TEXT, name TEXT, notes TEXT,
+  favorite INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL, reprompt INTEGER, key TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT, deleted_at TEXT`;
+const CIPHER_CONSTRAINTS = `FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CHECK ((user_id IS NOT NULL AND organization_id IS NULL) OR (user_id IS NULL AND organization_id IS NOT NULL))`;
+
+const ORGANIZATION_SCHEMA_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS organizations (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, billing_email TEXT NOT NULL, public_key TEXT, private_key TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS organization_members (
+    id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, user_id TEXT, email TEXT NOT NULL COLLATE NOCASE,
+    type INTEGER NOT NULL CHECK (type IN (0, 1, 2, 3)), status INTEGER NOT NULL CHECK (status IN (-1, 0, 1, 2)),
+    access_all INTEGER NOT NULL DEFAULT 0, key TEXT, external_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE (organization_id, email), UNIQUE (organization_id, user_id),
+    FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS collections (
+    id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, name TEXT NOT NULL, external_id TEXT,
+    FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS organization_groups (
+    id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, name TEXT NOT NULL, access_all INTEGER NOT NULL DEFAULT 0, external_id TEXT,
+    FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS organization_group_members (
+    group_id TEXT NOT NULL, member_id TEXT NOT NULL, PRIMARY KEY (group_id, member_id),
+    FOREIGN KEY (group_id) REFERENCES organization_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (member_id) REFERENCES organization_members(id) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS collection_users (
+    collection_id TEXT NOT NULL, member_id TEXT NOT NULL, read_only INTEGER NOT NULL DEFAULT 0,
+    hide_passwords INTEGER NOT NULL DEFAULT 0, manage INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (collection_id, member_id),
+    FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+    FOREIGN KEY (member_id) REFERENCES organization_members(id) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS collection_groups (
+    collection_id TEXT NOT NULL, group_id TEXT NOT NULL, read_only INTEGER NOT NULL DEFAULT 0,
+    hide_passwords INTEGER NOT NULL DEFAULT 0, manage INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (collection_id, group_id),
+    FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+    FOREIGN KEY (group_id) REFERENCES organization_groups(id) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS cipher_collections (
+    cipher_id TEXT NOT NULL, collection_id TEXT NOT NULL, PRIMARY KEY (cipher_id, collection_id),
+    FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE,
+    FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS cipher_user_preferences (
+    cipher_id TEXT NOT NULL, user_id TEXT NOT NULL, folder_id TEXT, favorite INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (cipher_id, user_id), FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL)`,
+  `CREATE TABLE IF NOT EXISTS organization_events (
+    id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, actor_user_id TEXT, type INTEGER NOT NULL, target_id TEXT, date TEXT NOT NULL, data TEXT,
+    FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL)`,
+  'CREATE INDEX IF NOT EXISTS idx_organization_members_user ON organization_members(user_id, status)',
+  'CREATE INDEX IF NOT EXISTS idx_collections_organization ON collections(organization_id)',
+  'CREATE INDEX IF NOT EXISTS idx_organization_groups_organization ON organization_groups(organization_id)',
+  'CREATE INDEX IF NOT EXISTS idx_organization_group_members_member ON organization_group_members(member_id)',
+  'CREATE INDEX IF NOT EXISTS idx_collection_users_member ON collection_users(member_id)',
+  'CREATE INDEX IF NOT EXISTS idx_collection_groups_group ON collection_groups(group_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cipher_collections_collection ON cipher_collections(collection_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cipher_user_preferences_user ON cipher_user_preferences(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_organization_events_date ON organization_events(organization_id, date)',
+];
+
+// Validate both writes to links and ownership changes to their parent rows.
+// A personal cipher can become organization-owned before its collection links exist.
+const ORGANIZATION_ASSOCIATIONS = [
+  ['organization_group_members', 'group_id', 'organization_groups', 'member_id', 'organization_members'],
+  ['collection_users', 'collection_id', 'collections', 'member_id', 'organization_members'],
+  ['collection_groups', 'collection_id', 'collections', 'group_id', 'organization_groups'],
+  ['cipher_collections', 'cipher_id', 'ciphers', 'collection_id', 'collections'],
+] as const;
+
+function organizationConstraintStatements(): string[] {
+  const statements = ['CREATE INDEX IF NOT EXISTS idx_ciphers_organization_updated ON ciphers(organization_id, updated_at)'];
+  for (const [link, leftColumn, leftTable, rightColumn, rightTable] of ORGANIZATION_ASSOCIATIONS) {
+    for (const operation of ['INSERT', 'UPDATE']) {
+      statements.push(`CREATE TRIGGER IF NOT EXISTS ${link}_same_org_${operation.toLowerCase()}
+        BEFORE ${operation} ON ${link}
+        WHEN NOT EXISTS (SELECT 1 FROM ${leftTable} l JOIN ${rightTable} r
+          ON l.organization_id = r.organization_id WHERE l.id = NEW.${leftColumn} AND r.id = NEW.${rightColumn})
+        BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END`);
+    }
+    for (const [parent, parentColumn, other, otherColumn] of [
+      [leftTable, leftColumn, rightTable, rightColumn], [rightTable, rightColumn, leftTable, leftColumn],
+    ]) {
+      statements.push(`CREATE TRIGGER IF NOT EXISTS ${link}_${parent}_ownership_update
+        BEFORE UPDATE OF organization_id ON ${parent}
+        WHEN EXISTS (SELECT 1 FROM ${link} link JOIN ${other} other ON other.id = link.${otherColumn}
+          WHERE link.${parentColumn} = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+        BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END`);
+    }
+  }
+  for (const operation of ['INSERT', 'UPDATE']) {
+    statements.push(`CREATE TRIGGER IF NOT EXISTS cipher_user_preferences_folder_${operation.toLowerCase()}
+      BEFORE ${operation} ON cipher_user_preferences
+      WHEN NEW.folder_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM folders WHERE id = NEW.folder_id AND user_id = NEW.user_id)
+      BEGIN SELECT RAISE(ABORT, 'Cipher preference folder belongs to another user'); END`);
+  }
+  statements.push(`CREATE TRIGGER IF NOT EXISTS cipher_user_preferences_folder_owner_update
+    BEFORE UPDATE OF user_id ON folders
+    WHEN EXISTS (SELECT 1 FROM cipher_user_preferences WHERE folder_id = OLD.id AND user_id IS NOT NEW.user_id)
+    BEGIN SELECT RAISE(ABORT, 'Cipher preference folder belongs to another user'); END`);
+  return statements;
+}
+
 const SCHEMA_STATEMENTS: readonly string[] = [
+  ...ORGANIZATION_SCHEMA_STATEMENTS,
   'CREATE TABLE IF NOT EXISTS users (' +
   'id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT, master_password_hint TEXT, master_password_hash TEXT NOT NULL, ' +
   'key TEXT NOT NULL, private_key TEXT, public_key TEXT, kdf_type INTEGER NOT NULL, ' +
@@ -38,11 +143,7 @@ const SCHEMA_STATEMENTS: readonly string[] = [
   'user_id TEXT PRIMARY KEY, revision_date TEXT NOT NULL, ' +
   'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
 
-  'CREATE TABLE IF NOT EXISTS ciphers (' +
-  'id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type INTEGER NOT NULL, folder_id TEXT, name TEXT, notes TEXT, ' +
-  'favorite INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL, reprompt INTEGER, key TEXT, ' +
-  'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT, deleted_at TEXT, ' +
-  'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
+  `CREATE TABLE IF NOT EXISTS ciphers (${CIPHER_COLUMNS}, ${CIPHER_CONSTRAINTS})`,
   'ALTER TABLE ciphers ADD COLUMN archived_at TEXT',
   'CREATE INDEX IF NOT EXISTS idx_ciphers_user_updated ON ciphers(user_id, updated_at)',
   'CREATE INDEX IF NOT EXISTS idx_ciphers_user_archived ON ciphers(user_id, archived_at)',
@@ -199,11 +300,66 @@ async function ensureAdminUserExists(db: D1Database): Promise<void> {
     .run();
 }
 
+type SchemaColumn = { name: string; type: string; notnull: number; dflt_value: string | null };
+const ORGANIZATION_MIGRATION_KEY = 'schema.organization-ownership.v1';
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+async function cipherOwnershipSchemaIsCurrent(db: D1Database): Promise<boolean> {
+  const result = await db.prepare('PRAGMA table_info(ciphers)').all<SchemaColumn>();
+  return result.results.some((column) => column.name === 'organization_id')
+    && result.results.some((column) => column.name === 'user_id' && column.notnull === 0);
+}
+
+async function migrateCipherOwnership(db: D1Database): Promise<void> {
+  if (await cipherOwnershipSchemaIsCurrent(db)) return;
+  const { results: columns } = await db.prepare('PRAGMA table_info(ciphers)').all<SchemaColumn>();
+  const knownColumns = new Set(['id', 'user_id', 'organization_id', 'type', 'folder_id', 'name', 'notes', 'favorite',
+    'data', 'reprompt', 'key', 'created_at', 'updated_at', 'archived_at', 'deleted_at']);
+  // Preserve additional SQL columns as well as byte-exact opaque cipher JSON.
+  const extraDefinitions = columns.filter((column) => !knownColumns.has(column.name)).map((column) =>
+    `${quoteIdentifier(column.name)} ${column.type}${column.notnull ? ' NOT NULL' : ''}${column.dflt_value !== null ? ` DEFAULT ${column.dflt_value}` : ''}`);
+  const copiedColumns = columns.map((column) => quoteIdentifier(column.name)).join(', ');
+  const dependentTables = ['attachments', 'cipher_collections', 'cipher_user_preferences'];
+  const statements = [
+    `INSERT INTO config (key, value) VALUES ('${ORGANIZATION_MIGRATION_KEY}', 'complete')`,
+    'PRAGMA defer_foreign_keys = ON',
+    ...dependentTables.map((table) => `CREATE TABLE ${table}__ownership_snapshot AS SELECT * FROM ${table}`),
+    `CREATE TABLE ciphers__ownership_new (${CIPHER_COLUMNS}${extraDefinitions.length ? `, ${extraDefinitions.join(', ')}` : ''}, ${CIPHER_CONSTRAINTS})`,
+    `INSERT INTO ciphers__ownership_new (${copiedColumns}) SELECT ${copiedColumns} FROM ciphers`,
+    // Dropping the old parent really cascades even with deferred foreign keys.
+    'DROP TABLE ciphers',
+    'ALTER TABLE ciphers__ownership_new RENAME TO ciphers',
+    ...dependentTables.map((table) => `INSERT INTO ${table} SELECT * FROM ${table}__ownership_snapshot`),
+    ...dependentTables.map((table) => `DROP TABLE ${table}__ownership_snapshot`),
+    'CREATE INDEX IF NOT EXISTS idx_ciphers_user_updated ON ciphers(user_id, updated_at)',
+    'CREATE INDEX IF NOT EXISTS idx_ciphers_user_archived ON ciphers(user_id, archived_at)',
+    'CREATE INDEX IF NOT EXISTS idx_ciphers_user_deleted ON ciphers(user_id, deleted_at)',
+    'CREATE INDEX IF NOT EXISTS idx_ciphers_user_deleted_updated ON ciphers(user_id, deleted_at, updated_at)',
+    'CREATE INDEX IF NOT EXISTS idx_ciphers_user_folder ON ciphers(user_id, folder_id)',
+  ];
+  try {
+    await db.batch(statements.map((statement) => db.prepare(statement)));
+  } catch (error) {
+    // Another bootstrap can win after our inspection. Its durable unique claim
+    // prevents a stale second rebuild from discarding new organization records.
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('UNIQUE constraint failed: config.key') && await cipherOwnershipSchemaIsCurrent(db)) return;
+    throw error;
+  }
+}
+
 export async function ensureStorageSchema(db: D1Database): Promise<void> {
   await db.prepare('PRAGMA foreign_keys = ON').run();
   await db.prepare('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
   for (const stmt of SCHEMA_STATEMENTS) {
     await executeSchemaStatement(db, stmt);
+  }
+  await migrateCipherOwnership(db);
+  for (const statement of organizationConstraintStatements()) {
+    await executeSchemaStatement(db, statement);
   }
   await ensureAdminUserExists(db);
 }

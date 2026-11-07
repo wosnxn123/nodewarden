@@ -344,8 +344,13 @@ export default function VaultEditor(props: VaultEditorProps) {
     props.onReorderDraftLoginUri(fromIndex, toIndex);
   };
 
+  const readOnly = props.selectedCipher?.edit === false;
+  const hideSecrets = props.selectedCipher?.viewPassword === false;
+
   return (
     <>
+      {readOnly && <p role="status">{t('org_read_only')}</p>}
+      {hideSecrets && <p role="status">{t('org_hide_passwords')}</p>}
       <div className="card">
         <div className="section-head">
           <h3 className="detail-title">{props.isCreating ? t('txt_new_type_header', { type: cipherTypeLabel(props.draft.type) }) : t('txt_edit_type_header', { type: cipherTypeLabel(props.draft.type) })}</h3>
@@ -388,10 +393,12 @@ export default function VaultEditor(props: VaultEditorProps) {
         </div>
         <label className="field">
           <span>{t('txt_name')}</span>
-          <input className="input" value={props.draft.name} onInput={(e) => props.onUpdateDraft({ name: (e.currentTarget as HTMLInputElement).value })} />
+          <input className="input" disabled={readOnly} value={props.draft.name} onInput={(e) => props.onUpdateDraft({ name: (e.currentTarget as HTMLInputElement).value })} />
         </label>
       </div>
 
+      <fieldset disabled={readOnly} className="m-0 min-w-0 border-0 p-0">
+      <fieldset disabled={hideSecrets} className="m-0 min-w-0 border-0 p-0">
       {props.draft.type === 1 && (
         <div className="card">
           <h4>{t('txt_login_credentials')}</h4>
@@ -648,6 +655,7 @@ export default function VaultEditor(props: VaultEditorProps) {
         </div>
       )}
 
+      </fieldset>
       <div className="card">
         <div className="section-head attachment-head">
           <h4>{t('txt_attachments')}</h4>
@@ -739,12 +747,13 @@ export default function VaultEditor(props: VaultEditorProps) {
         <h4>{t('txt_additional_options')}</h4>
         <label className="field">
           <span>{t('txt_notes')}</span>
-          <textarea className="input textarea" value={props.draft.notes} onInput={(e) => props.onUpdateDraft({ notes: (e.currentTarget as HTMLTextAreaElement).value })} />
+          <textarea className="input textarea" disabled={hideSecrets && props.draft.type === 2} value={props.draft.notes} onInput={(e) => props.onUpdateDraft({ notes: (e.currentTarget as HTMLTextAreaElement).value })} />
         </label>
         <label className="check-line">
           <input type="checkbox" checked={props.draft.reprompt} onInput={(e) => props.onUpdateDraft({ reprompt: (e.currentTarget as HTMLInputElement).checked })} />
           {t('txt_master_password_reprompt')}
         </label>
+        <fieldset disabled={hideSecrets} className="m-0 min-w-0 border-0 p-0">
         <div className="section-head">
           <h4>{t('txt_custom_fields')}</h4>
           <button type="button" className="btn btn-secondary small" onClick={props.onOpenFieldModal}>
@@ -786,8 +795,10 @@ export default function VaultEditor(props: VaultEditorProps) {
               </div>
             </div>
           ))}
+        </fieldset>
       </div>
 
+      </fieldset>
       <div className="detail-actions">
         <div className="actions">
           <button type="button" className="btn btn-primary" disabled={props.busy} onClick={props.onSave}>
@@ -800,7 +811,7 @@ export default function VaultEditor(props: VaultEditorProps) {
           </button>
         </div>
         {!props.isCreating && props.selectedCipher && (
-          <button type="button" className="btn btn-danger" disabled={props.busy} onClick={props.onDeleteSelected}>
+          <button type="button" className="btn btn-danger" disabled={props.busy || readOnly || props.selectedCipher.permissions?.delete === false} onClick={props.onDeleteSelected}>
             <Trash2 size={14} className="btn-icon" />
             {t('txt_delete')}
           </button>

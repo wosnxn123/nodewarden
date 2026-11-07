@@ -22,6 +22,8 @@ import {
   putBlobObject,
 } from '../services/blob-store';
 import { auditRequestMetadata, writeAuditEvent } from '../services/audit-events';
+import { getCipherPermissions } from '../services/organization-access';
+import { createAttachmentForUser, updateAttachmentForUser } from '../services/storage-attachment-repo';
 
 function notifyVaultSyncForRequest(
   request: Request,
@@ -42,15 +44,16 @@ function notifyCipherUpdateForRequest(
   request: Request,
   env: Env,
   cipher: Cipher,
-  revisionDate: string
+  revisionDate: string,
+  userId: string
 ): void {
   notifyUserCipherUpdate(env, {
-    userId: cipher.userId,
+    userId,
     cipherId: cipher.id,
     revisionDate,
-    organizationId: normalizeOptionalId((cipher as any).organizationId ?? null),
-    collectionIds: Array.isArray((cipher as any).collectionIds)
-      ? (cipher as any).collectionIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
+    organizationId: normalizeOptionalId(cipher.organizationId),
+    collectionIds: Array.isArray(cipher.collectionIds)
+      ? cipher.collectionIds.map((id) => String(id || '').trim()).filter(Boolean)
       : null,
     contextId: readActingDeviceIdentifier(request),
   });
@@ -110,8 +113,10 @@ async function processAttachmentUpload(
   env: Env,
   cipher: Cipher,
   attachment: Attachment,
-  cipherId: string
+  cipherId: string,
+  userId: string
 ): Promise<Response> {
+  const originalAttachment = { ...attachment };
   const storage = new StorageService(env.DB);
   const maxFileSize = getBlobStorageMaxBytes(env, LIMITS.attachment.maxFileSizeBytes);
   const upload = await parseDirectUploadPayload(request, {
@@ -126,6 +131,14 @@ async function processAttachmentUpload(
   const path = getAttachmentObjectKey(cipherId, attachment.id);
   if (await getBlobObject(env, path)) {
     return errorResponse('Attachment file has already been uploaded', 409);
+  }
+
+  // Parsing an upload can take time. Reauthorize in the metadata mutation after
+  // parsing and before writing any bytes; never resurrect a deleted attachment.
+  attachment.size = upload.size;
+  attachment.sizeName = formatSize(upload.size);
+  if (!await updateAttachmentForUser(env.DB, attachment, userId, originalAttachment)) {
+    return errorResponse('Attachment not found or access revoked', 404);
   }
 
   try {
@@ -145,16 +158,18 @@ async function processAttachmentUpload(
     return errorResponse('Attachment storage is not configured', 500);
   }
 
-  if (upload.size !== attachment.size) {
-    attachment.size = upload.size;
-    attachment.sizeName = formatSize(upload.size);
-    await storage.saveAttachment(attachment);
+  // R2/KV and D1 do not share a transaction. Fail closed if access disappeared
+  // during the blob write; a revoked actor must not delete an existing blob.
+  if (!(await getCipherPermissions(env.DB, userId, cipherId)).write) {
+    return errorResponse('Cipher not found or access revoked', 404);
   }
 
-  const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
+  const revisionInfo = await storage.updateCipherRevisionDate(cipherId, userId);
   if (revisionInfo) {
-    notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
-    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate);
+    for (const recipientId of revisionInfo.userIds) {
+      notifyVaultSyncForRequest(request, env, recipientId, revisionInfo.revisionDate);
+    }
+    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate, userId);
   }
 
   return new Response(null, { status: 201 });
@@ -170,11 +185,17 @@ export async function handleCreateAttachment(
 ): Promise<Response> {
   const storage = new StorageService(env.DB);
 
-  // Verify cipher exists and belongs to user
+  // Read authorization includes confirmed organization collection grants.
   const cipher = await storage.getCipherForUser(cipherId, userId);
-  if (!cipher || cipher.userId !== userId) {
+  if (!cipher) {
     return errorResponse('Cipher not found', 404);
   }
+
+  if (!(await getCipherPermissions(env.DB, userId, cipherId)).write) {
+    return errorResponse('Cipher is read-only', 403);
+  }
+  const jwtSecret = getSafeJwtSecret(env);
+  if (!jwtSecret) return errorResponse('Server configuration error', 500);
 
   let body: {
     fileName?: string;
@@ -205,26 +226,23 @@ export async function handleCreateAttachment(
     key: body.key,
   };
 
-  // Save attachment metadata
-  await storage.saveAttachment(attachment);
+  // Insert + authorization + revision/event fanout commit as one D1 batch.
+  if (!await createAttachmentForUser(env.DB, attachment, userId)) {
+    return errorResponse('Cipher not found or access revoked', 404);
+  }
 
-  // Add attachment to cipher
-  await storage.addAttachmentToCipherForUser(cipherId, attachmentId, userId);
-
-  // Update cipher revision date
-  const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
+  const revisionInfo = await storage.updateCipherRevisionDate(cipherId, userId);
   if (revisionInfo) {
-    notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
-    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate);
+    for (const recipientId of revisionInfo.userIds) {
+      notifyVaultSyncForRequest(request, env, recipientId, revisionInfo.revisionDate);
+    }
+    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate, userId);
   }
 
   // Get updated cipher for response
   const updatedCipher = await storage.getCipherForUser(cipherId, userId);
+  if (!updatedCipher) return errorResponse('Cipher not found or access revoked', 404);
   const attachments = await storage.getAttachmentsByCipher(cipherId);
-  const jwtSecret = getSafeJwtSecret(env);
-  if (!jwtSecret) {
-    return errorResponse('Server configuration error', 500);
-  }
   const uploadToken = await createAttachmentUploadToken(userId, cipherId, attachmentId, jwtSecret);
 
   return jsonResponse({
@@ -247,9 +265,9 @@ export async function handleUploadAttachment(
 ): Promise<Response> {
   const storage = new StorageService(env.DB);
 
-  // Verify cipher exists and belongs to user
+  // Read authorization includes confirmed organization collection grants.
   const cipher = await storage.getCipherForUser(cipherId, userId);
-  if (!cipher || cipher.userId !== userId) {
+  if (!cipher) {
     return errorResponse('Cipher not found', 404);
   }
 
@@ -259,7 +277,10 @@ export async function handleUploadAttachment(
     return errorResponse('Attachment not found', 404);
   }
 
-  return processAttachmentUpload(request, env, cipher, attachment, cipherId);
+  if (!(await getCipherPermissions(env.DB, userId, cipherId)).write) {
+    return errorResponse('Cipher is read-only', 403);
+  }
+  return processAttachmentUpload(request, env, cipher, attachment, cipherId, userId);
 }
 
 export async function handlePublicUploadAttachment(
@@ -288,7 +309,7 @@ export async function handlePublicUploadAttachment(
 
   const storage = new StorageService(env.DB);
   const cipher = await storage.getCipherForUser(cipherId, claims.userId);
-  if (!cipher || cipher.userId !== claims.userId) {
+  if (!cipher) {
     return errorResponse('Cipher not found', 404);
   }
 
@@ -297,7 +318,10 @@ export async function handlePublicUploadAttachment(
     return errorResponse('Attachment not found', 404);
   }
 
-  return processAttachmentUpload(request, env, cipher, attachment, cipherId);
+  if (!(await getCipherPermissions(env.DB, claims.userId, cipherId)).write) {
+    return errorResponse('Cipher is read-only', 403);
+  }
+  return processAttachmentUpload(request, env, cipher, attachment, cipherId, claims.userId);
 }
 
 // GET /api/ciphers/{cipherId}/attachment/{attachmentId}
@@ -311,9 +335,9 @@ export async function handleGetAttachment(
 ): Promise<Response> {
   const storage = new StorageService(env.DB);
 
-  // Verify cipher exists and belongs to user
+  // Read authorization includes confirmed organization collection grants.
   const cipher = await storage.getCipherForUser(cipherId, userId);
-  if (!cipher || cipher.userId !== userId) {
+  if (!cipher) {
     return errorResponse('Cipher not found', 404);
   }
 
@@ -325,7 +349,9 @@ export async function handleGetAttachment(
   const responseAttachment = applyCipherEmbeddedAttachmentMetadata(cipher, [attachment])[0] || attachment;
 
   // Generate short-lived download token
-  const token = await createFileDownloadToken(cipherId, attachmentId, env.JWT_SECRET);
+  const jwtSecret = getSafeJwtSecret(env);
+  if (!jwtSecret) return errorResponse('Server configuration error', 500);
+  const token = await createFileDownloadToken(cipherId, attachmentId, jwtSecret, userId);
   
   // Generate download URL with token
   const url = new URL(request.url);
@@ -354,7 +380,7 @@ export async function handleUpdateAttachmentMetadata(
   const storage = new StorageService(env.DB);
 
   const cipher = await storage.getCipherForUser(cipherId, userId);
-  if (!cipher || cipher.userId !== userId) {
+  if (!cipher) {
     return errorResponse('Cipher not found', 404);
   }
 
@@ -363,6 +389,11 @@ export async function handleUpdateAttachmentMetadata(
     return errorResponse('Attachment not found', 404);
   }
 
+  if (!(await getCipherPermissions(env.DB, userId, cipherId)).write) {
+    return errorResponse('Cipher is read-only', 403);
+  }
+
+  const originalAttachment = { ...attachment };
   let body: { fileName?: string | null; key?: string | null };
   try {
     body = await request.json();
@@ -384,11 +415,15 @@ export async function handleUpdateAttachmentMetadata(
     attachment.key = key || null;
   }
 
-  await storage.saveAttachment(attachment);
-  const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
+  if (!await updateAttachmentForUser(env.DB, attachment, userId, originalAttachment)) {
+    return errorResponse('Attachment not found or access revoked', 404);
+  }
+  const revisionInfo = await storage.updateCipherRevisionDate(cipherId, userId);
   if (revisionInfo) {
-    notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
-    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate);
+    for (const recipientId of revisionInfo.userIds) {
+      notifyVaultSyncForRequest(request, env, recipientId, revisionInfo.revisionDate);
+    }
+    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate, userId);
   }
 
   return jsonResponse({
@@ -432,18 +467,19 @@ export async function handlePublicDownloadAttachment(
 
   const storage = new StorageService(env.DB);
 
-  // Verify attachment exists
-  const attachment = await storage.getAttachment(attachmentId);
-  if (!attachment || attachment.cipherId !== cipherId) {
-    return errorResponse('Attachment not found', 404);
-  }
-
-  const path = getAttachmentObjectKey(cipherId, attachmentId);
   const firstUse = await storage.consumeAttachmentDownloadToken(claims.jti, claims.exp);
   if (!firstUse) {
     return errorResponse('Invalid or expired token', 401);
   }
 
+  // Token verification/consumption is not an authorization cache. Read fresh
+  // membership + collection grants for the bound requesting actor afterwards.
+  const attachment = await storage.getAttachmentForUser(attachmentId, claims.userId);
+  if (!attachment || attachment.cipherId !== cipherId) {
+    return errorResponse('Attachment not found or access revoked', 404);
+  }
+
+  const path = getAttachmentObjectKey(cipherId, attachmentId);
   const object = await getBlobObject(env, path);
   if (!object) {
     return errorResponse('Attachment file not found', 404);
@@ -454,7 +490,7 @@ export async function handlePublicDownloadAttachment(
       'Content-Type': sanitizeDownloadContentType(object.contentType),
       'Content-Length': String(object.size),
       'Content-Disposition': contentDispositionAttachment(attachment.fileName),
-      'Cache-Control': 'private, no-cache',
+      'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff',
     },
   });
@@ -471,9 +507,9 @@ export async function handleDeleteAttachment(
 ): Promise<Response> {
   const storage = new StorageService(env.DB);
 
-  // Verify cipher exists and belongs to user
+  // Read authorization includes confirmed organization collection grants.
   const cipher = await storage.getCipherForUser(cipherId, userId);
-  if (!cipher || cipher.userId !== userId) {
+  if (!cipher) {
     return errorResponse('Cipher not found', 404);
   }
 
@@ -483,17 +519,22 @@ export async function handleDeleteAttachment(
     return errorResponse('Attachment not found', 404);
   }
 
-  const path = getAttachmentObjectKey(cipherId, attachmentId);
-  await deleteBlobObject(env, path);
+  if (!(await getCipherPermissions(env.DB, userId, cipherId)).write) {
+    return errorResponse('Cipher is read-only', 403);
+  }
+  // The mutation rechecks write grants in SQL. Do not touch blob storage until
+  // the authorized metadata deletion has committed successfully.
+  if (!await storage.deleteAttachmentForUser(attachmentId, userId)) {
+    return errorResponse('Attachment not found or access revoked', 404);
+  }
+  await deleteAttachmentBlobs(env, [attachment]);
 
-  // Delete attachment metadata
-  await storage.deleteAttachmentForUser(attachmentId, userId);
-
-  // Update cipher revision date
-  const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
+  const revisionInfo = await storage.updateCipherRevisionDate(cipherId, userId);
   if (revisionInfo) {
-    notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
-    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate);
+    for (const recipientId of revisionInfo.userIds) {
+      notifyVaultSyncForRequest(request, env, recipientId, revisionInfo.revisionDate);
+    }
+    notifyCipherUpdateForRequest(request, env, cipher, revisionInfo.revisionDate, userId);
     await writeAttachmentAudit(storage, request, revisionInfo.userId, 'attachment.delete', {
       id: attachmentId,
       cipherId,
@@ -503,8 +544,9 @@ export async function handleDeleteAttachment(
 
   // Get updated cipher for response
   const updatedCipher = await storage.getCipherForUser(cipherId, userId);
+  if (!updatedCipher) return errorResponse('Cipher not found or access revoked', 404);
   const attachments = await storage.getAttachmentsByCipher(cipherId);
-  const cipherResponse = cipherToResponse(updatedCipher!, attachments);
+  const cipherResponse = cipherToResponse(updatedCipher, attachments);
 
   return jsonResponse({
     Cipher: cipherResponse,
@@ -528,15 +570,19 @@ export async function deleteAllAttachmentsForCiphers(
 ): Promise<void> {
   const storage = new StorageService(env.DB);
   const attachmentsByCipher = await storage.getAttachmentsByCipherIds(cipherIds);
-  const attachments = Array.from(attachmentsByCipher.entries()).flatMap(([ownedCipherId, items]) =>
-    items.map((attachment) => ({ attachment, cipherId: ownedCipherId }))
-  );
+  const attachments = Array.from(attachmentsByCipher.values()).flat();
   if (!attachments.length) return;
 
-  await runWithConcurrency(attachments, LIMITS.performance.attachmentDeleteConcurrency, async ({ attachment, cipherId }) => {
-    const path = getAttachmentObjectKey(cipherId, attachment.id);
-    await deleteBlobObject(env, path);
-  });
+  // Trusted administrative cleanup only. User-initiated cipher deletion instead
+  // passes a snapshot to deleteAttachmentBlobs after the cipher DELETE commits.
+  await storage.bulkDeleteAttachmentsByIds(attachments.map((attachment) => attachment.id));
+  await deleteAttachmentBlobs(env, attachments);
+}
 
-  await storage.bulkDeleteAttachmentsByIds(attachments.map(({ attachment }) => attachment.id));
+// This deliberately performs no DB lookup or mutation. Callers must authorize
+// and delete cipher/attachment metadata first, then pass the committed snapshot.
+export async function deleteAttachmentBlobs(env: Env, attachments: Attachment[]): Promise<void> {
+  await runWithConcurrency(attachments, LIMITS.performance.attachmentDeleteConcurrency, async (attachment) => {
+    await deleteBlobObject(env, getAttachmentObjectKey(attachment.cipherId, attachment.id));
+  });
 }

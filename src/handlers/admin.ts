@@ -1,6 +1,7 @@
 import { Env, User, Invite } from '../types';
 import { AuthService } from '../services/auth';
 import { StorageService } from '../services/storage';
+import { notifyUserLogout } from '../durable/notifications-hub';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { deleteBlobObject, getAttachmentObjectKey, getSendFileObjectKey } from '../services/blob-store';
 import { auditRequestMetadata, getAuditLogSettings, normalizeAuditLogSettings, saveAuditLogSettings, writeAuditEvent } from '../services/audit-events';
@@ -413,30 +414,35 @@ export async function handleAdminDeleteUser(
     return errorResponse('User not found', 404);
   }
 
-  // Clean up R2 files before DB cascade deletes the metadata rows.
-  // 1. Attachment files (keyed by cipherId/attachmentId)
-  const attachmentMap = await storage.getAttachmentsByUserId(target.id);
-  for (const [cipherId, attachments] of attachmentMap) {
-    for (const att of attachments) {
-      await deleteBlobObject(env, getAttachmentObjectKey(cipherId, att.id));
-    }
+  // Snapshot PERSONAL assets and authorize deletion in one serialized batch.
+  // Readable organization attachments do not belong to this user and must survive.
+  const deleted = await env.DB.batch([
+    env.DB.prepare('SELECT a.id,a.cipher_id FROM attachments a JOIN ciphers c ON c.id=a.cipher_id WHERE c.user_id=? AND c.organization_id IS NULL').bind(target.id),
+    env.DB.prepare('SELECT id,type,data FROM sends WHERE user_id=?').bind(target.id),
+    env.DB.prepare(`DELETE FROM users WHERE id=?
+      AND EXISTS(SELECT 1 FROM users actor WHERE actor.id=? AND actor.role='admin' AND actor.status='active'
+        AND actor.master_password_hash=? AND actor.security_stamp=?)
+      AND NOT EXISTS(SELECT 1 FROM organization_members m WHERE m.user_id=users.id AND m.type=0 AND m.status=2
+        AND NOT EXISTS(SELECT 1 FROM organization_members other WHERE other.organization_id=m.organization_id
+          AND other.id<>m.id AND other.type=0 AND other.status=2))`)
+      .bind(target.id,actorUser.id,actorUser.masterPasswordHash,actorUser.securityStamp),
+    env.DB.prepare('DELETE FROM webauthn_challenges WHERE user_id=? AND changes()=1').bind(target.id),
+  ]);
+  if (deleted[2].meta.changes !== 1) {
+    return errorResponse('Cannot delete the last organization owner, or administrator authentication changed', 400);
   }
-  // 2. Send files (keyed by sends/sendId/fileId)
-  const sends = await storage.getAllSends(target.id);
-  for (const send of sends) {
-    if (send.type === 1) { // SendType.File
-      try {
-        const parsed = JSON.parse(send.data) as Record<string, unknown>;
-        const fileId = typeof parsed.id === 'string' ? parsed.id : null;
-        if (fileId) {
-          await deleteBlobObject(env, getSendFileObjectKey(send.id, fileId));
-        }
-      } catch { /* non-file send or bad data, skip */ }
-    }
+  AuthService.invalidateUserCache(target.id);
+  notifyUserLogout(env, target.id);
+  for (const attachment of deleted[0].results as {id:string;cipher_id:string}[]) {
+    await deleteBlobObject(env,getAttachmentObjectKey(attachment.cipher_id,attachment.id));
   }
-
-  await storage.deleteRefreshTokensByUserId(target.id);
-  await storage.deleteUserById(target.id);
+  for (const send of deleted[1].results as {id:string;type:number;data:string}[]) {
+    if (send.type !== 1) continue;
+    let fileId: string | null = null;
+    try { const data=JSON.parse(send.data) as Record<string,unknown>; fileId=typeof data.id==='string'?data.id:null; }
+    catch { /* Invalid legacy Send metadata has no safe object identifier. */ }
+    if(fileId) await deleteBlobObject(env,getSendFileObjectKey(send.id,fileId));
+  }
   AuthService.invalidateUserCache(target.id);
   await writeAuditLog(storage, actorUser.id, 'admin.user.delete', 'user', target.id, {
     targetEmail: target.email,

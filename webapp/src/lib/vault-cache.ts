@@ -1,9 +1,12 @@
-import type { Cipher, Folder, Send } from './types';
+import type { Cipher, Folder, Send, Profile, Organization, OrganizationCollection } from './types';
 
 export interface VaultCoreSnapshot {
   ciphers: Cipher[];
   folders: Folder[];
   sends: Send[];
+  profile?: Profile;
+  organizations?: Organization[];
+  collections?: OrganizationCollection[];
 }
 
 interface VaultCoreCacheRecord {
@@ -38,6 +41,14 @@ function sanitizeSnapshotForCache(snapshot: VaultCoreSnapshot): VaultCoreSnapsho
     ciphers: stripDecryptedCacheFields(Array.isArray(snapshot.ciphers) ? snapshot.ciphers : []),
     folders: stripDecryptedCacheFields(Array.isArray(snapshot.folders) ? snapshot.folders : []),
     sends: stripDecryptedCacheFields(Array.isArray(snapshot.sends) ? snapshot.sends : []),
+    profile: snapshot.profile ? {
+      id: snapshot.profile.id, email: snapshot.profile.email, name: snapshot.profile.name,
+      role: snapshot.profile.role, key: snapshot.profile.key,
+      privateKey: snapshot.profile.privateKey, publicKey: snapshot.profile.publicKey,
+      organizations: stripDecryptedCacheFields(snapshot.profile.organizations || []),
+    } : undefined,
+    organizations: stripDecryptedCacheFields(snapshot.organizations || []),
+    collections: stripDecryptedCacheFields(snapshot.collections || []),
   };
 }
 

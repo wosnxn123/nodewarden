@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS users (
   verify_devices INTEGER NOT NULL DEFAULT 0,
   totp_secret TEXT,
   totp_recovery_code TEXT,
+  yubikey_key1 TEXT,
+  yubikey_key2 TEXT,
+  yubikey_key3 TEXT,
+  yubikey_key4 TEXT,
+  yubikey_key5 TEXT,
+  yubikey_nfc INTEGER NOT NULL DEFAULT 0,
   api_key TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -55,9 +61,54 @@ CREATE TABLE IF NOT EXISTS user_revisions (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS organizations (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, billing_email TEXT NOT NULL, public_key TEXT, private_key TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS organization_members (
+  id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, user_id TEXT, email TEXT NOT NULL COLLATE NOCASE,
+  type INTEGER NOT NULL CHECK (type IN (0, 1, 2, 3)), status INTEGER NOT NULL CHECK (status IN (-1, 0, 1, 2)),
+  access_all INTEGER NOT NULL DEFAULT 0, key TEXT, external_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  UNIQUE (organization_id, email), UNIQUE (organization_id, user_id),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_organization_members_user ON organization_members(user_id, status);
+CREATE TABLE IF NOT EXISTS collections (
+  id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, name TEXT NOT NULL, external_id TEXT,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_collections_organization ON collections(organization_id);
+CREATE TABLE IF NOT EXISTS organization_groups (
+  id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, name TEXT NOT NULL, access_all INTEGER NOT NULL DEFAULT 0, external_id TEXT,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_organization_groups_organization ON organization_groups(organization_id);
+CREATE TABLE IF NOT EXISTS organization_group_members (
+  group_id TEXT NOT NULL, member_id TEXT NOT NULL, PRIMARY KEY (group_id, member_id),
+  FOREIGN KEY (group_id) REFERENCES organization_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (member_id) REFERENCES organization_members(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_organization_group_members_member ON organization_group_members(member_id);
+CREATE TABLE IF NOT EXISTS collection_users (
+  collection_id TEXT NOT NULL, member_id TEXT NOT NULL, read_only INTEGER NOT NULL DEFAULT 0,
+  hide_passwords INTEGER NOT NULL DEFAULT 0, manage INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (collection_id, member_id),
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+  FOREIGN KEY (member_id) REFERENCES organization_members(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_collection_users_member ON collection_users(member_id);
+CREATE TABLE IF NOT EXISTS collection_groups (
+  collection_id TEXT NOT NULL, group_id TEXT NOT NULL, read_only INTEGER NOT NULL DEFAULT 0,
+  hide_passwords INTEGER NOT NULL DEFAULT 0, manage INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (collection_id, group_id),
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+  FOREIGN KEY (group_id) REFERENCES organization_groups(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_collection_groups_group ON collection_groups(group_id);
+
 CREATE TABLE IF NOT EXISTS ciphers (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
+  user_id TEXT,
+  organization_id TEXT,
   type INTEGER NOT NULL,
   folder_id TEXT,
   name TEXT,
@@ -70,7 +121,9 @@ CREATE TABLE IF NOT EXISTS ciphers (
   updated_at TEXT NOT NULL,
   archived_at TEXT,
   deleted_at TEXT,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  CHECK ((user_id IS NOT NULL AND organization_id IS NULL) OR (user_id IS NULL AND organization_id IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_ciphers_user_updated ON ciphers(user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ciphers_user_archived ON ciphers(user_id, archived_at);
@@ -98,6 +151,90 @@ CREATE TABLE IF NOT EXISTS attachments (
   FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_cipher ON attachments(cipher_id);
+CREATE INDEX IF NOT EXISTS idx_ciphers_organization_updated ON ciphers(organization_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS cipher_collections (
+  cipher_id TEXT NOT NULL, collection_id TEXT NOT NULL, PRIMARY KEY (cipher_id, collection_id),
+  FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_cipher_collections_collection ON cipher_collections(collection_id);
+CREATE TABLE IF NOT EXISTS cipher_user_preferences (
+  cipher_id TEXT NOT NULL, user_id TEXT NOT NULL, folder_id TEXT, favorite INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (cipher_id, user_id), FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cipher_user_preferences_user ON cipher_user_preferences(user_id);
+CREATE TABLE IF NOT EXISTS organization_events (
+  id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, actor_user_id TEXT, type INTEGER NOT NULL, target_id TEXT, date TEXT NOT NULL, data TEXT,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_organization_events_date ON organization_events(organization_id, date);
+
+-- Links must share SQL organization ownership, including after parent updates.
+CREATE TRIGGER IF NOT EXISTS organization_group_members_same_org_insert BEFORE INSERT ON organization_group_members
+WHEN NOT EXISTS (SELECT 1 FROM organization_groups l JOIN organization_members r ON l.organization_id = r.organization_id WHERE l.id = NEW.group_id AND r.id = NEW.member_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS organization_group_members_same_org_update BEFORE UPDATE ON organization_group_members
+WHEN NOT EXISTS (SELECT 1 FROM organization_groups l JOIN organization_members r ON l.organization_id = r.organization_id WHERE l.id = NEW.group_id AND r.id = NEW.member_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS organization_group_members_organization_groups_ownership_update BEFORE UPDATE OF organization_id ON organization_groups
+WHEN EXISTS (SELECT 1 FROM organization_group_members link JOIN organization_members other ON other.id = link.member_id WHERE link.group_id = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS organization_group_members_organization_members_ownership_update BEFORE UPDATE OF organization_id ON organization_members
+WHEN EXISTS (SELECT 1 FROM organization_group_members link JOIN organization_groups other ON other.id = link.group_id WHERE link.member_id = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+
+CREATE TRIGGER IF NOT EXISTS collection_users_same_org_insert BEFORE INSERT ON collection_users
+WHEN NOT EXISTS (SELECT 1 FROM collections l JOIN organization_members r ON l.organization_id = r.organization_id WHERE l.id = NEW.collection_id AND r.id = NEW.member_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS collection_users_same_org_update BEFORE UPDATE ON collection_users
+WHEN NOT EXISTS (SELECT 1 FROM collections l JOIN organization_members r ON l.organization_id = r.organization_id WHERE l.id = NEW.collection_id AND r.id = NEW.member_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS collection_users_collections_ownership_update BEFORE UPDATE OF organization_id ON collections
+WHEN EXISTS (SELECT 1 FROM collection_users link JOIN organization_members other ON other.id = link.member_id WHERE link.collection_id = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS collection_users_organization_members_ownership_update BEFORE UPDATE OF organization_id ON organization_members
+WHEN EXISTS (SELECT 1 FROM collection_users link JOIN collections other ON other.id = link.collection_id WHERE link.member_id = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+
+CREATE TRIGGER IF NOT EXISTS collection_groups_same_org_insert BEFORE INSERT ON collection_groups
+WHEN NOT EXISTS (SELECT 1 FROM collections l JOIN organization_groups r ON l.organization_id = r.organization_id WHERE l.id = NEW.collection_id AND r.id = NEW.group_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS collection_groups_same_org_update BEFORE UPDATE ON collection_groups
+WHEN NOT EXISTS (SELECT 1 FROM collections l JOIN organization_groups r ON l.organization_id = r.organization_id WHERE l.id = NEW.collection_id AND r.id = NEW.group_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS collection_groups_collections_ownership_update BEFORE UPDATE OF organization_id ON collections
+WHEN EXISTS (SELECT 1 FROM collection_groups link JOIN organization_groups other ON other.id = link.group_id WHERE link.collection_id = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS collection_groups_organization_groups_ownership_update BEFORE UPDATE OF organization_id ON organization_groups
+WHEN EXISTS (SELECT 1 FROM collection_groups link JOIN collections other ON other.id = link.collection_id WHERE link.group_id = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+
+CREATE TRIGGER IF NOT EXISTS cipher_collections_same_org_insert BEFORE INSERT ON cipher_collections
+WHEN NOT EXISTS (SELECT 1 FROM ciphers l JOIN collections r ON l.organization_id = r.organization_id WHERE l.id = NEW.cipher_id AND r.id = NEW.collection_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS cipher_collections_same_org_update BEFORE UPDATE ON cipher_collections
+WHEN NOT EXISTS (SELECT 1 FROM ciphers l JOIN collections r ON l.organization_id = r.organization_id WHERE l.id = NEW.cipher_id AND r.id = NEW.collection_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS cipher_collections_ciphers_ownership_update BEFORE UPDATE OF organization_id ON ciphers
+WHEN EXISTS (SELECT 1 FROM cipher_collections link JOIN collections other ON other.id = link.collection_id WHERE link.cipher_id = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+CREATE TRIGGER IF NOT EXISTS cipher_collections_collections_ownership_update BEFORE UPDATE OF organization_id ON collections
+WHEN EXISTS (SELECT 1 FROM cipher_collections link JOIN ciphers other ON other.id = link.cipher_id WHERE link.collection_id = OLD.id AND other.organization_id IS NOT NEW.organization_id)
+BEGIN SELECT RAISE(ABORT, 'Cross-organization association'); END;
+
+CREATE TRIGGER IF NOT EXISTS cipher_user_preferences_folder_insert BEFORE INSERT ON cipher_user_preferences
+WHEN NEW.folder_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM folders WHERE id = NEW.folder_id AND user_id = NEW.user_id)
+BEGIN SELECT RAISE(ABORT, 'Cipher preference folder belongs to another user'); END;
+CREATE TRIGGER IF NOT EXISTS cipher_user_preferences_folder_update BEFORE UPDATE ON cipher_user_preferences
+WHEN NEW.folder_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM folders WHERE id = NEW.folder_id AND user_id = NEW.user_id)
+BEGIN SELECT RAISE(ABORT, 'Cipher preference folder belongs to another user'); END;
+CREATE TRIGGER IF NOT EXISTS cipher_user_preferences_folder_owner_update BEFORE UPDATE OF user_id ON folders
+WHEN EXISTS (SELECT 1 FROM cipher_user_preferences WHERE folder_id = OLD.id AND user_id IS NOT NEW.user_id)
+BEGIN SELECT RAISE(ABORT, 'Cipher preference folder belongs to another user'); END;
 
 CREATE TABLE IF NOT EXISTS sends (
   id TEXT PRIMARY KEY,

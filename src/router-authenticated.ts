@@ -1,4 +1,7 @@
 import type { Env, User } from './types';
+import { handleOrganizationRoute } from './handlers/organizations';
+import { handleChangeKdf, handlePurgeVault, handleDeleteAccount } from './handlers/account-lifecycle';
+import { handleShareCipher, handleCipherCollections, handleBulkShareCiphers } from './handlers/ciphers';
 import { errorResponse, jsonResponse, unsupportedResponse } from './utils/response';
 import {
   handleGetProfile,
@@ -105,20 +108,18 @@ export async function handleAuthenticatedRoute(
   path: string,
   method: string
 ): Promise<Response | null> {
-  if (method === 'POST' || method === 'PUT' || method === 'DELETE') {
-    const blockedAccountPaths = new Set([
-      '/api/accounts/set-password',
-      '/api/accounts/delete',
-      '/api/accounts/delete-account',
-      '/api/accounts/delete-vault',
-    ]);
-    if (blockedAccountPaths.has(path)) {
-      return errorResponse('Not implemented', 501);
-    }
+  if (['/api/accounts/delete', '/api/accounts/delete-account'].includes(path) && (method === 'POST' || method === 'DELETE')) {
+    return handleDeleteAccount(request, env, userId);
   }
-
+  if (path === '/api/accounts' && method === 'DELETE') return handleDeleteAccount(request, env, userId);
+  if ((path === '/api/ciphers/purge' || path === '/api/accounts/delete-vault') && (method === 'POST' || method === 'DELETE')) {
+    return handlePurgeVault(request, env, userId);
+  }
+  if (path === '/api/accounts/set-password' && ['POST', 'PUT', 'DELETE'].includes(method)) {
+    return unsupportedResponse('Initial password setup requires a supported enrollment flow.');
+  }
   if ((path === '/api/accounts/kdf' || path === '/accounts/kdf') && (method === 'POST' || method === 'PUT')) {
-    return unsupportedResponse('KDF changes are not supported by this server.');
+    return handleChangeKdf(request, env, userId);
   }
 
   const mailBackedAccountPaths = new Set([
@@ -294,6 +295,10 @@ export async function handleAuthenticatedRoute(
     return null;
   }
 
+  if (path === '/api/ciphers/share' && (method === 'POST' || method === 'PUT')) {
+    return handleBulkShareCiphers(request, env, userId);
+  }
+
   if (path === '/api/ciphers/import' && method === 'POST') {
     return handleCiphersImport(request, env, userId);
   }
@@ -339,7 +344,8 @@ export async function handleAuthenticatedRoute(
     if (subPath === '/archive' && (method === 'PUT' || method === 'POST')) return handleArchiveCipher(request, env, userId, cipherId);
     if (subPath === '/unarchive' && (method === 'PUT' || method === 'POST')) return handleUnarchiveCipher(request, env, userId, cipherId);
     if (subPath === '/partial' && (method === 'PUT' || method === 'POST')) return handlePartialUpdateCipher(request, env, userId, cipherId);
-    if (subPath === '/share' && method === 'POST') return handleGetCipher(request, env, userId, cipherId);
+    if (subPath === '/share' && (method === 'POST' || method === 'PUT')) return handleShareCipher(request, env, userId, cipherId);
+    if ((subPath === '/collections' || subPath === '/collections-admin') && (method === 'POST' || method === 'PUT')) return handleCipherCollections(request, env, userId, cipherId);
     if (subPath === '/details' && method === 'GET') return handleGetCipher(request, env, userId, cipherId);
     if (subPath === '/attachment/v2' && method === 'POST') return handleCreateAttachment(request, env, userId, cipherId);
     if (subPath === '/attachment' && method === 'POST') return handleCreateAttachment(request, env, userId, cipherId);
@@ -403,19 +409,8 @@ export async function handleAuthenticatedRoute(
     return errorResponse('Method not allowed', 405);
   }
 
-  if (path === '/api/collections' || path.startsWith('/api/collections/')) {
-    if (method === 'GET') {
-      return jsonResponse({ data: [], object: 'list', continuationToken: null });
-    }
-    return null;
-  }
-
-  if (path === '/api/organizations' || path.startsWith('/api/organizations/')) {
-    if (method === 'GET') {
-      return jsonResponse({ data: [], object: 'list', continuationToken: null });
-    }
-    return null;
-  }
+  const organizationResponse = await handleOrganizationRoute(request, env, currentUser, path, method);
+  if (organizationResponse) return organizationResponse;
 
   if (path === '/api/sends') {
     if (method === 'GET') return handleGetSends(request, env, userId);

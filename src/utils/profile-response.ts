@@ -2,9 +2,8 @@ import type { Env, ProfileResponse, User } from '../types';
 import { buildAccountKeys } from './user-decryption';
 import { isYubiKeyEnabled } from './yubico-otp';
 
-export function buildProfileResponse(user: User, env?: Env): ProfileResponse {
+export function buildProfileResponse(user: User, env?: Env, organizations: Record<string, unknown>[] = []): ProfileResponse {
   void env;
-  const organizations: any[] = [];
   const accountKeys = buildAccountKeys(user);
 
   return {
@@ -21,6 +20,7 @@ export function buildProfileResponse(user: User, env?: Env): ProfileResponse {
     yubikeyEnabled: isYubiKeyEnabled(user),
     key: user.key,
     privateKey: user.privateKey,
+    publicKey: user.publicKey,
     accountKeys,
     securityStamp: user.securityStamp || user.id,
     organizations,

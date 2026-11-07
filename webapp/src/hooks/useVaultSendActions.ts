@@ -48,6 +48,7 @@ import {
   type CiphersImportPayload,
   type ImportedCipherMapEntry,
   updateCipher,
+  updateCipherPreferences,
   updateFolder,
   unarchiveCipher,
   uploadCipherAttachment,
@@ -338,7 +339,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
       });
       const encKey = base64ToBytes(session.symEncKey);
       const macKey = base64ToBytes(session.symMacKey);
-      const decrypted = await decryptSingleCipher(encrypted, encKey, macKey);
+      const decrypted = await decryptSingleCipher(encrypted, encKey, macKey, session.organizationKeys);
       patchDecryptedCiphers((prev) => {
         const idx = prev.findIndex((c) => c.id === decrypted.id);
         if (idx >= 0) {
@@ -358,7 +359,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
       patchEncryptedCiphers((prev) => [encrypted, ...prev.filter((cipher) => cipher.id !== optimisticId && cipher.id !== encrypted.id)]);
       const encKey = base64ToBytes(session.symEncKey);
       const macKey = base64ToBytes(session.symMacKey);
-      const decrypted = await decryptSingleCipher(encrypted, encKey, macKey);
+      const decrypted = await decryptSingleCipher(encrypted, encKey, macKey, session.organizationKeys);
       patchDecryptedCiphers((prev) => {
         const next = prev.filter((cipher) => cipher.id !== optimisticId && cipher.id !== decrypted.id);
         return [decrypted, ...next];
@@ -573,6 +574,14 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
         }
         const addFiles = Array.isArray(options?.addFiles) ? options.addFiles : [];
         const removeAttachmentIds = Array.isArray(options?.removeAttachmentIds) ? options.removeAttachmentIds : [];
+        if (cipher.edit === false) {
+          if (addFiles.length || removeAttachmentIds.length) throw new Error('Cipher is read-only');
+          const updated = await updateCipherPreferences(authedFetch, cipher, { folderId: draft.folderId || null, favorite: !!draft.favorite });
+          await decryptAndPatch(updated);
+          void refreshVaultRevisionStamp();
+          onNotify('success', t('txt_item_updated'));
+          return;
+        }
         const previousCipher: Cipher = {
           ...cipher,
           login: cipher.login ? { ...cipher.login, uris: cipher.login.uris ? [...cipher.login.uris] : cipher.login.uris } : cipher.login,
@@ -1161,7 +1170,9 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
         await verifyMasterPassword(authedFetch, verifyDerived.hash);
 
         const rawFolders = encryptedFolders || [];
-        const rawCiphers = encryptedCiphers || [];
+        // Account exports contain personal items only. Organization exports need
+        // a separately authorized organization-specific flow and key envelope.
+        const rawCiphers = (encryptedCiphers || []).filter((cipher) => !cipher.organizationId && cipher.viewPassword !== false);
         if (!rawFolders || !rawCiphers) throw new Error(t('txt_vault_not_ready'));
 
         let plainJsonCache: string | null = null;

@@ -19,6 +19,8 @@
     "i18n": "node scripts/i18n-validate.cjs",
     "i18n:validate": "node scripts/i18n-validate.cjs",
     "test:config-compatibility": "tsx --test scripts/config-compatibility.test.ts",
+    "test:organizations": "tsx --tsconfig webapp/tsconfig.json --import ./scripts/offline-workers-loader.mjs --test scripts/organizations.test.ts scripts/organization-storage.test.ts scripts/organization-ciphers.test.ts scripts/organization-attachments.test.ts scripts/organization-migration.test.ts scripts/organization-backup.test.ts scripts/organization-crypto.test.ts",
+    "test:account-lifecycle": "tsx --tsconfig webapp/tsconfig.json --import ./scripts/offline-workers-loader.mjs --test scripts/account-lifecycle.test.ts",
     "test:vault-compatibility": "tsx --tsconfig webapp/tsconfig.json --import ./scripts/offline-workers-loader.mjs --test scripts/vault-compatibility.test.ts",
     "test:web-crypto": "tsx --test scripts/web-crypto-availability.test.ts",
     "test:notifications-security": "tsx --test scripts/notifications-security.test.ts",

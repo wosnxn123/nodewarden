@@ -70,7 +70,8 @@ import { dispatchBackupProgress, type BackupProgressDetail } from '@/lib/backup-
 import { clearOfflineUnlockRecord } from '@/lib/offline-auth';
 import { clearPasswordSecurityCache } from '@/lib/password-security-cache';
 import { decryptSends, decryptVaultCore } from '@/lib/vault-decrypt';
-import { decryptSendsInWorker, decryptVaultCoreInWorker } from '@/lib/vault-worker';
+import { decryptOrganizationKeys } from '@/lib/organization-crypto';
+import { decryptSendsInWorker, decryptVaultCoreInWorker, clearVaultDecryptWorker } from '@/lib/vault-worker';
 import {
   DEMO_CIPHERS,
   DEMO_ADMIN_INVITES,
@@ -115,6 +116,7 @@ const APP_ROUTE_PATHS = [
   '/security/password-health',
   '/generator',
   '/sends',
+  '/organizations',
   '/admin',
   '/logs',
   LEGACY_DEVICE_MANAGEMENT_ROUTE,
@@ -911,6 +913,8 @@ export default function App() {
     const nextSession = { ...currentSession };
     delete nextSession.symEncKey;
     delete nextSession.symMacKey;
+    delete nextSession.organizationKeys;
+    clearVaultDecryptWorker();
     setSession(nextSession);
     setProfile((prev) => stripProfileSecrets(prev));
     setDecryptedFolders([]);
@@ -936,6 +940,10 @@ export default function App() {
       void revokeCurrentSession(sessionRef.current);
     }
     setConfirm(null);
+    clearVaultDecryptWorker();
+    setDecryptedFolders([]);
+    setDecryptedCiphers([]);
+    setDecryptedSends([]);
     setSession(null);
     clearProfileSnapshot();
     clearOfflineUnlockRecord();
@@ -1339,18 +1347,28 @@ export default function App() {
     (async () => {
       try {
         setVaultDecryptError('');
+        const organizationKeys = await decryptOrganizationKeys(encryptedVaultCore?.profile || profile, encryptedVaultCore?.organizations || [], session);
+        if (!active) return;
+        const current = sessionRef.current;
+        if (current && current.symEncKey === session.symEncKey && current.symMacKey === session.symMacKey) {
+          if (JSON.stringify(current.organizationKeys || {}) !== JSON.stringify(organizationKeys)) clearVaultDecryptWorker();
+          setSession({ ...current, organizationKeys });
+        }
         let result;
         try {
           result = await decryptVaultCoreInWorker({
             folders: encryptedFolders,
             ciphers: encryptedCiphers,
+            organizationKeys,
             symEncKeyB64: session.symEncKey!,
             symMacKeyB64: session.symMacKey!,
           });
         } catch {
+          if (!active) return;
           result = await decryptVaultCore({
             folders: encryptedFolders,
             ciphers: encryptedCiphers,
+            organizationKeys,
             symEncKeyB64: session.symEncKey!,
             symMacKeyB64: session.symMacKey!,
           });
@@ -1393,7 +1411,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [session?.symEncKey, session?.symMacKey, vaultCacheKey, encryptedFolders, encryptedCiphers]);
+  }, [session?.symEncKey, session?.symMacKey, vaultCacheKey, encryptedFolders, encryptedCiphers, encryptedVaultCore?.organizations, encryptedVaultCore?.profile, profile?.privateKey]);
 
   useEffect(() => {
     if (IS_DEMO_MODE) return;
@@ -1469,6 +1487,9 @@ export default function App() {
       ciphers: Array.isArray(snapshot?.ciphers) ? snapshot.ciphers : [],
       folders: Array.isArray(snapshot?.folders) ? snapshot.folders : [],
       sends: Array.isArray(snapshot?.sends) ? snapshot.sends : [],
+      profile: snapshot?.profile,
+      organizations: snapshot?.organizations,
+      collections: snapshot?.collections,
     };
   }
 
@@ -1591,6 +1612,7 @@ export default function App() {
       const result = await decryptVaultCore({
         folders: [],
         ciphers: [encrypted],
+        organizationKeys: session.organizationKeys,
         symEncKeyB64: session.symEncKey,
         symMacKeyB64: session.symMacKey,
       });
@@ -1971,6 +1993,7 @@ export default function App() {
     if (location === '/vault/totp') return t('txt_verification_code');
     if (location === '/generator') return t('txt_password_generator');
     if (location === '/sends') return t('nav_sends');
+    if (location === '/organizations') return t('org_title');
     if (location === '/admin') return t('nav_admin_panel');
     if (location === '/logs') return t('nav_log_center');
     if (location === LEGACY_DEVICE_MANAGEMENT_ROUTE || location === DEVICE_MANAGEMENT_ROUTE) return t('nav_device_management');
@@ -2024,6 +2047,7 @@ export default function App() {
     profile,
     profileLoading: profileQuery.isFetching && !profile,
     session,
+    organizationFetch: IS_DEMO_MODE ? undefined : authedFetch,
     mobileLayout,
     mobileSidebarToggleKey,
     themePreference,

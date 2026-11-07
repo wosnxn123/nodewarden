@@ -21,6 +21,8 @@ import { readResponseBytesWithProgress } from '../download';
 import { loadVaultCoreSyncSnapshot } from './vault-sync';
 import { cipherFieldMetadata } from '../cipher-fields';
 import { t } from '../i18n';
+import { getOwnerKeyParts } from '../organization-crypto';
+import { preserveHiddenCiphertext } from '../cipher-permissions';
 
 type CipherLoginData = NonNullable<Cipher['login']>;
 const NODEWARDEN_WEB_REPAIR_HEADER = 'X-NodeWarden-Web';
@@ -237,9 +239,12 @@ export async function uploadCipherAttachment(
   if (!id) throw new Error('Cipher id is required');
   if (!file) throw new Error('File is required');
 
-  const userEnc = base64ToBytes(session.symEncKey);
-  const userMac = base64ToBytes(session.symMacKey);
-  const itemKeys = await getCipherKeys(cipherForKey || null, userEnc, userMac);
+  const effectiveCipher = cipherForKey || await getCipherById(authedFetch, id);
+  if (effectiveCipher.edit === false || effectiveCipher.decryptionUnavailable) throw new Error('Cipher is read-only');
+  const owner = getOwnerKeyParts(effectiveCipher, session);
+  const userEnc = owner.enc;
+  const userMac = owner.mac;
+  const itemKeys = await getCipherKeys(effectiveCipher, userEnc, userMac);
 
   const encryptedFileName = await encryptTextValue(file.name, itemKeys.enc, itemKeys.mac);
   if (!encryptedFileName) throw new Error('Invalid attachment name');
@@ -414,8 +419,9 @@ export async function downloadCipherAttachmentDecrypted(
   if (!rawResp.ok) throw new Error('Download attachment failed');
   const encryptedBytes = await readResponseBytesWithProgress(rawResp, (progress) => onProgress?.(progress.percent));
 
-  const userEnc = base64ToBytes(session.symEncKey);
-  const userMac = base64ToBytes(session.symMacKey);
+  const owner = getOwnerKeyParts(cipher, session);
+  const userEnc = owner.enc;
+  const userMac = owner.mac;
   const itemKeys = await getCipherKeys(cipher, userEnc, userMac);
   const userKeys = { enc: userEnc, mac: userMac };
 
@@ -920,9 +926,11 @@ async function getCipherKeys(
     try {
       const raw = await decryptBw(cipher.key, userEnc, userMac);
       if (raw.length >= 64) return { enc: raw.slice(0, 32), mac: raw.slice(32, 64), key: cipher.key };
-    } catch {
-      // use user key
+    } catch (error) {
+      if (cipher.organizationId) throw error;
+      // Preserve the personal legacy fallback only.
     }
+    if (cipher.organizationId) throw new Error('Invalid organization item key');
   }
   return { enc: userEnc, mac: userMac, key: null };
 }
@@ -1025,6 +1033,7 @@ export async function repairCipherUriChecksums(
   let repaired = 0;
 
   for (const cipher of ciphers) {
+    if (cipher.organizationId) continue; // Personal compatibility repair must never cross ownership.
     if (!cipher?.id || cipher.type !== 1 || !cipher.login || !Array.isArray(cipher.login.uris)) continue;
     let keys: { enc: Uint8Array; mac: Uint8Array; key: string | null } = {
       enc: userEnc,
@@ -1256,6 +1265,7 @@ export async function repairCipherKeyMismatches(
   let repaired = 0;
 
   for (const cipher of ciphers) {
+    if (cipher.organizationId) continue; // Personal compatibility repair must never cross ownership.
     if (!cipher?.id || !looksLikeCipherString(cipher.key)) continue;
     if (!(await hasItemKeyFieldMismatch(cipher, userEnc, userMac))) continue;
     if (hasUnresolvedEncryptedFields(cipher)) continue;
@@ -1279,14 +1289,19 @@ async function buildCipherPayload(
   cipher: Cipher | null
 ): Promise<Record<string, unknown>> {
   if (!session.symEncKey || !session.symMacKey) throw new Error('Vault key unavailable');
-  const userEnc = base64ToBytes(session.symEncKey);
-  const userMac = base64ToBytes(session.symMacKey);
+  if (cipher?.decryptionUnavailable || cipher?.edit === false) throw new Error('Cipher is read-only');
+  const organizationId = cipher?.organizationId ?? draft.organizationId ?? null;
+  const owner = getOwnerKeyParts({ organizationId }, session);
+  const userEnc = owner.enc;
+  const userMac = owner.mac;
   const keys = await getCipherKeys(cipher, userEnc, userMac);
   const type = Number(draft.type || cipher?.type || 1);
   const now = new Date().toISOString();
 
   const payload: Record<string, unknown> = {
     type,
+    organizationId,
+    collectionIds: cipher?.collectionIds ?? draft.collectionIds ?? [],
     favorite: !!draft.favorite,
     folderId: asNullable(draft.folderId),
     reprompt: draft.reprompt ? 1 : 0,
@@ -1440,6 +1455,7 @@ async function buildCipherPayload(
     payload.secureNote = { ...stripDecodedObjectFields(cipher?.secureNote), type: 0 };
   }
 
+  if (cipher) preserveHiddenCiphertext(payload, cipher);
   return payload;
 }
 
@@ -1491,6 +1507,21 @@ export async function updateCipher(
   });
   if (!resp.ok) throw createApiError(await parseErrorMessage(resp, t('txt_update_item_failed')), resp.status);
   return (await parseJson<Cipher>(resp))!;
+}
+
+export async function updateCipherPreferences(
+  authedFetch: AuthedFetch,
+  cipher: Cipher,
+  preferences: { folderId: string | null; favorite: boolean }
+): Promise<Cipher> {
+  const response = await authedFetch(`/api/ciphers/${encodeURIComponent(cipher.id)}/partial`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...preferences, lastKnownRevisionDate: cipher.revisionDate }),
+  });
+  if (!response.ok) throw createApiError(await parseErrorMessage(response, t('txt_update_item_failed')), response.status);
+  const updated = await parseJson<Cipher>(response);
+  if (!updated?.id) throw new Error(t('txt_update_item_failed'));
+  return updated;
 }
 
 export async function deleteCipher(authedFetch: AuthedFetch, cipherId: string): Promise<Cipher> {

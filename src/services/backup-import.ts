@@ -1,4 +1,5 @@
 import type { Env, User } from '../types';
+import { ORGANIZATION_BACKUP_TABLES, ORGANIZATION_BACKUP_TABLE_COLUMNS, type OrganizationBackupTableName, type OrganizationBackupImportCounts } from '../../shared/backup-schema';
 import { KV_MAX_OBJECT_BYTES, deleteBlobObject, getAttachmentObjectKey, getBlobStorageKind, putBlobObject } from './blob-store';
 import { BACKUP_SETTINGS_CONFIG_KEY, normalizeImportedBackupSettingsValue } from './backup-config';
 import { YUBICO_BOOTSTRAP_CLAIM_CONFIG_KEY } from './yubico-config';
@@ -31,7 +32,8 @@ type BackupTableName =
   | 'webauthn_credentials'
   | 'folders'
   | 'ciphers'
-  | 'attachments';
+  | 'attachments'
+  | OrganizationBackupTableName;
 
 const BACKUP_TABLES: BackupTableName[] = [
   'config',
@@ -40,9 +42,38 @@ const BACKUP_TABLES: BackupTableName[] = [
   'user_revisions',
   'webauthn_credentials',
   'folders',
+  'organizations',
+  'organization_members',
+  'collections',
+  'organization_groups',
+  'organization_group_members',
+  'collection_users',
+  'collection_groups',
   'ciphers',
+  'cipher_collections',
+  'cipher_user_preferences',
   'attachments',
+  'organization_events',
 ];
+
+function organizationTableCounts(db: BackupPayload['db']): Partial<Record<BackupTableName, number>> {
+  return Object.fromEntries(ORGANIZATION_BACKUP_TABLES.map((table) => [table, (db[table] || []).length]));
+}
+
+function organizationImportCounts(db: BackupPayload['db']): OrganizationBackupImportCounts {
+  return {
+    organizations: (db.organizations || []).length,
+    organizationMembers: (db.organization_members || []).length,
+    collections: (db.collections || []).length,
+    organizationGroups: (db.organization_groups || []).length,
+    organizationGroupMembers: (db.organization_group_members || []).length,
+    collectionUsers: (db.collection_users || []).length,
+    collectionGroups: (db.collection_groups || []).length,
+    cipherCollections: (db.cipher_collections || []).length,
+    cipherUserPreferences: (db.cipher_user_preferences || []).length,
+    organizationEvents: (db.organization_events || []).length,
+  };
+}
 
 function shadowTableName(table: BackupTableName): string {
   return `${table}__restore`;
@@ -50,7 +81,7 @@ function shadowTableName(table: BackupTableName): string {
 
 export interface BackupImportResultBody {
   object: 'instance-backup-import';
-  imported: {
+  imported: OrganizationBackupImportCounts & {
     config: number;
     users: number;
     domainSettings: number;
@@ -163,6 +194,7 @@ async function ensureImportTargetIsFresh(db: D1Database): Promise<void> {
     db.prepare('SELECT COUNT(*) AS count FROM folders').first<{ count: number }>(),
     db.prepare('SELECT COUNT(*) AS count FROM attachments').first<{ count: number }>(),
     db.prepare('SELECT COUNT(*) AS count FROM sends').first<{ count: number }>(),
+    ...ORGANIZATION_BACKUP_TABLES.map((table) => db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first<{ count: number }>()),
   ]);
   const total = counts.reduce((sum, row) => sum + Number(row?.count || 0), 0);
   if (total > 0) {
@@ -171,16 +203,7 @@ async function ensureImportTargetIsFresh(db: D1Database): Promise<void> {
 }
 
 function buildResetImportTargetStatements(db: D1Database): D1PreparedStatement[] {
-  return [
-    'DELETE FROM attachments',
-    'DELETE FROM ciphers',
-    'DELETE FROM folders',
-    'DELETE FROM webauthn_credentials',
-    'DELETE FROM domain_settings',
-    'DELETE FROM user_revisions',
-    'DELETE FROM users',
-    'DELETE FROM config',
-  ].map((sql) => db.prepare(sql));
+  return BACKUP_TABLES.slice().reverse().map((table) => db.prepare(`DELETE FROM ${table}`));
 }
 
 async function collectCurrentBlobKeys(db: D1Database): Promise<Set<string>> {
@@ -276,7 +299,10 @@ async function prepareImportedConfigRows(
   userRows: SqlRow[]
 ): Promise<SqlRow[]> {
   let nextConfigRows = cloneRows(configRows || []).filter(
-    (row) => String(row.key || '').trim() !== YUBICO_BOOTSTRAP_CLAIM_CONFIG_KEY
+    (row) => {
+      const key = String(row.key || '').trim();
+      return key !== YUBICO_BOOTSTRAP_CLAIM_CONFIG_KEY && key !== 'backup.runner.lock.v1' && !key.startsWith('organization.sync.');
+    }
   );
   const rawBackupSettings = nextConfigRows.find((row) => String(row.key || '').trim() === BACKUP_SETTINGS_CONFIG_KEY);
   const normalizedBackupSettings = await normalizeImportedBackupSettingsValue(
@@ -298,7 +324,9 @@ async function prepareImportedConfigRows(
 }
 
 async function importPreparedBackupRows(db: D1Database, payload: BackupPayload['db'], env: Env): Promise<BackupPayload['db']> {
+  const organizationRows = Object.fromEntries(ORGANIZATION_BACKUP_TABLES.map((table) => [table, cloneRows(payload[table] || [])]));
   const preparedDb: BackupPayload['db'] = {
+    ...organizationRows,
     config: await prepareImportedConfigRows(env, payload.config || [], payload.users || []),
     users: cloneRows(payload.users || []).map((row) => ({
       ...row,
@@ -314,6 +342,7 @@ async function importPreparedBackupRows(db: D1Database, payload: BackupPayload['
     folders: cloneRows(payload.folders || []),
     ciphers: cloneRows(payload.ciphers || []).map((row) => ({
       ...row,
+      organization_id: row.organization_id ?? null,
       archived_at: row.archived_at ?? null,
     })),
     attachments: cloneRows(payload.attachments || []),
@@ -674,16 +703,22 @@ async function importBackupRows(db: D1Database, payload: BackupPayload['db'], us
     tableName('folders'),
     buildInsertStatements(db, tableName('folders'), ['id', 'user_id', 'name', 'created_at', 'updated_at'], payload.folders || [])
   );
+  for (const table of ORGANIZATION_BACKUP_TABLES.slice(0, 7)) {
+    await runInsertBatch(db, tableName(table), buildInsertStatements(db, tableName(table), [...ORGANIZATION_BACKUP_TABLE_COLUMNS[table]], payload[table] || []));
+  }
   await runInsertBatch(
     db,
     tableName('ciphers'),
     buildInsertStatements(
       db,
       tableName('ciphers'),
-      ['id', 'user_id', 'type', 'folder_id', 'name', 'notes', 'favorite', 'data', 'reprompt', 'key', 'created_at', 'updated_at', 'archived_at', 'deleted_at'],
+      ['id', 'user_id', 'organization_id', 'type', 'folder_id', 'name', 'notes', 'favorite', 'data', 'reprompt', 'key', 'created_at', 'updated_at', 'archived_at', 'deleted_at'],
       payload.ciphers || []
     )
   );
+  for (const table of ORGANIZATION_BACKUP_TABLES.slice(7)) {
+    await runInsertBatch(db, tableName(table), buildInsertStatements(db, tableName(table), [...ORGANIZATION_BACKUP_TABLE_COLUMNS[table]], payload[table] || []));
+  }
   await runInsertBatch(
     db,
     tableName('attachments'),
@@ -733,6 +768,7 @@ export async function importBackupArchiveBytes(
     });
     const db = await importPreparedBackupRows(env.DB, prepared.payload.db, env);
     await validateShadowTableCounts(env.DB, {
+      ...organizationTableCounts(db),
       config: (db.config || []).length,
       users: (db.users || []).length,
       domain_settings: (db.domain_settings || []).length,
@@ -756,6 +792,7 @@ export async function importBackupArchiveBytes(
     const failedRestoreRows = (db.attachments || []).filter((row) => !restoredAttachmentKeys.has(attachmentRowKey(row)));
     await removeAttachmentRows(env.DB, failedRestoreRows, true).catch(() => undefined);
     await validateShadowTableCounts(env.DB, {
+      ...organizationTableCounts(db),
       config: (db.config || []).length,
       users: (db.users || []).length,
       domain_settings: (db.domain_settings || []).length,
@@ -797,6 +834,7 @@ export async function importBackupArchiveBytes(
       result: {
         object: 'instance-backup-import',
         imported: {
+          ...organizationImportCounts(db),
           config: (db.config || []).length,
           users: (db.users || []).length,
           domainSettings: (db.domain_settings || []).length,
@@ -874,6 +912,7 @@ export async function importRemoteBackupArchiveBytes(
     });
     const db = await importPreparedBackupRows(env.DB, preparedRemote.payload.db, env);
     await validateShadowTableCounts(env.DB, {
+      ...organizationTableCounts(db),
       config: (db.config || []).length,
       users: (db.users || []).length,
       domain_settings: (db.domain_settings || []).length,
@@ -897,6 +936,7 @@ export async function importRemoteBackupArchiveBytes(
     const failedRestoreRows = (db.attachments || []).filter((row) => !restoredAttachmentKeys.has(attachmentRowKey(row)));
     await removeAttachmentRows(env.DB, failedRestoreRows, true).catch(() => undefined);
     await validateShadowTableCounts(env.DB, {
+      ...organizationTableCounts(db),
       config: (db.config || []).length,
       users: (db.users || []).length,
       domain_settings: (db.domain_settings || []).length,
@@ -944,6 +984,7 @@ export async function importRemoteBackupArchiveBytes(
       result: {
         object: 'instance-backup-import',
         imported: {
+          ...organizationImportCounts(db),
           config: (db.config || []).length,
           users: (db.users || []).length,
           domainSettings: (db.domain_settings || []).length,

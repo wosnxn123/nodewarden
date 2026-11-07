@@ -6,6 +6,37 @@
 // encrypted by src/services/backup-settings-crypto.ts before storage/export.
 // User-facing provider names should use canonical values here. Legacy aliases
 // belong in backend normalization, not in this shared type.
+// Archive v2 makes organization ownership explicit. Older restores must reject it,
+// not silently discard organization records while restoring the personal tables.
+export const BACKUP_FORMAT_VERSION = 2;
+export type BackupFormatVersion = 1 | typeof BACKUP_FORMAT_VERSION;
+export const ORGANIZATION_BACKUP_TABLE_COLUMNS = {
+  organizations: ['id', 'name', 'billing_email', 'public_key', 'private_key', 'created_at', 'updated_at'],
+  organization_members: ['id', 'organization_id', 'user_id', 'email', 'type', 'status', 'access_all', 'key', 'external_id', 'created_at', 'updated_at'],
+  collections: ['id', 'organization_id', 'name', 'external_id'],
+  organization_groups: ['id', 'organization_id', 'name', 'access_all', 'external_id'],
+  organization_group_members: ['group_id', 'member_id'],
+  collection_users: ['collection_id', 'member_id', 'read_only', 'hide_passwords', 'manage'],
+  collection_groups: ['collection_id', 'group_id', 'read_only', 'hide_passwords', 'manage'],
+  cipher_collections: ['cipher_id', 'collection_id'],
+  cipher_user_preferences: ['cipher_id', 'user_id', 'folder_id', 'favorite'],
+  organization_events: ['id', 'organization_id', 'actor_user_id', 'type', 'target_id', 'date', 'data'],
+} as const;
+export type OrganizationBackupTableName = keyof typeof ORGANIZATION_BACKUP_TABLE_COLUMNS;
+export const ORGANIZATION_BACKUP_TABLES = Object.keys(ORGANIZATION_BACKUP_TABLE_COLUMNS) as OrganizationBackupTableName[];
+export interface OrganizationBackupImportCounts {
+  organizations: number;
+  organizationMembers: number;
+  collections: number;
+  organizationGroups: number;
+  organizationGroupMembers: number;
+  collectionUsers: number;
+  collectionGroups: number;
+  cipherCollections: number;
+  cipherUserPreferences: number;
+  organizationEvents: number;
+}
+
 export const BACKUP_DEFAULT_TIMEZONE = 'UTC';
 export const BACKUP_DEFAULT_RETENTION_COUNT = 30;
 export const BACKUP_DEFAULT_S3_REGION = 'auto';

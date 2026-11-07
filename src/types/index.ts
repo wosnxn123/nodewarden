@@ -245,7 +245,8 @@ export interface PasswordHistory {
 
 export interface Cipher {
   id: string;
-  userId: string;
+  userId: string | null;
+  organizationId?: string | null;
   type: CipherType;
   folderId: string | null;
   name: string | null;
@@ -575,6 +576,7 @@ export interface ProfileResponse {
   yubikeyEnabled?: boolean;
   key: string;
   privateKey: string | null;
+  publicKey: string | null;
   accountKeys: any | null;
   securityStamp: string;
   organizations: any[];

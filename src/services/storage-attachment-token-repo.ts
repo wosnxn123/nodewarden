@@ -20,11 +20,14 @@ export async function consumeAttachmentDownloadToken(
   expUnixSeconds: number
 ): Promise<{ consumed: boolean; cleanedUpAt: number | null }> {
   const nowMs = Date.now();
+  if (!jti || !Number.isFinite(expUnixSeconds) || expUnixSeconds * 1000 <= nowMs) {
+    return { consumed: false, cleanedUpAt: null };
+  }
   let cleanedUpAt: number | null = null;
 
   if (shouldRunPeriodicCleanup(lastCleanupAt, cleanupIntervalMs)) {
     await db
-      .prepare('DELETE FROM used_attachment_download_tokens WHERE expires_at < ?')
+      .prepare('DELETE FROM used_attachment_download_tokens WHERE expires_at <= ?')
       .bind(nowMs)
       .run();
     cleanedUpAt = nowMs;

@@ -1,6 +1,7 @@
 import { zipSync, unzipSync, type UnzipFileInfo } from 'fflate';
 import type { Env } from '../types';
 import { APP_VERSION } from '../../shared/app-version';
+import { BACKUP_FORMAT_VERSION, ORGANIZATION_BACKUP_TABLES, ORGANIZATION_BACKUP_TABLE_COLUMNS, type BackupFormatVersion, type OrganizationBackupTableName } from '../../shared/backup-schema';
 import { BACKUP_SETTINGS_CONFIG_KEY } from './backup-config';
 import { YUBICO_BOOTSTRAP_CLAIM_CONFIG_KEY } from './yubico-config';
 import { exportPortableBackupSettingsEnvelope } from './backup-settings-crypto';
@@ -24,7 +25,6 @@ import {
 //   envelope must not leave the instance.
 type SqlRow = Record<string, string | number | null>;
 
-const BACKUP_FORMAT_VERSION = 1;
 const BACKUP_RUNNER_LOCK_CONFIG_KEY = 'backup.runner.lock.v1';
 const BACKUP_FILE_HASH_PREFIX_LENGTH = 5;
 // Worker-side backup export must stay well below Cloudflare CPU limits.
@@ -38,7 +38,7 @@ const MAX_BACKUP_DB_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_BACKUP_PATH_SEGMENT_LENGTH = 128;
 
 export interface BackupManifest {
-  formatVersion: 1;
+  formatVersion: BackupFormatVersion;
   exportedAt: string;
   appVersion: string;
   storageKind: 'r2' | 'kv' | null;
@@ -72,7 +72,7 @@ export interface BackupPayload {
     ciphers: SqlRow[];
     attachments: SqlRow[];
     webauthn_credentials?: SqlRow[];
-  };
+  } & Partial<Record<OrganizationBackupTableName, SqlRow[]>>;
 }
 
 export interface BackupArchiveBundle {
@@ -104,16 +104,11 @@ export interface BackupArchiveBuildProgressEvent {
 
 export type BackupArchiveBuildProgressReporter = (event: BackupArchiveBuildProgressEvent) => Promise<void>;
 
-async function queryRows(db: D1Database, sql: string, ...values: unknown[]): Promise<SqlRow[]> {
-  const result = await db.prepare(sql).bind(...values).all<SqlRow>();
-  return (result.results || []).map((row) => ({ ...row }));
-}
-
 function sanitizeConfigRowsForExport(rows: SqlRow[]): SqlRow[] {
   const sanitized: SqlRow[] = [];
   for (const row of rows) {
     const key = String(row.key || '').trim();
-    if (!key || key === BACKUP_RUNNER_LOCK_CONFIG_KEY || key === YUBICO_BOOTSTRAP_CLAIM_CONFIG_KEY) continue;
+    if (!key || key === BACKUP_RUNNER_LOCK_CONFIG_KEY || key === YUBICO_BOOTSTRAP_CLAIM_CONFIG_KEY || key.startsWith('organization.sync.')) continue;
 
     if (key === BACKUP_SETTINGS_CONFIG_KEY) {
       const portableOnly = exportPortableBackupSettingsEnvelope(typeof row.value === 'string' ? row.value : null);
@@ -262,14 +257,31 @@ function ensureRowArray(value: unknown, table: string): SqlRow[] {
   return value as SqlRow[];
 }
 
-function normalizeParsedBackupDb(value: unknown): BackupPayload['db'] {
+function normalizeParsedBackupDb(value: unknown, formatVersion: BackupFormatVersion): BackupPayload['db'] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Backup archive database payload is invalid');
   }
   const source = value as Record<string, unknown>;
-  // Restore uses an explicit allowlist. Extra tables from old or modified
-  // archives, especially runtime authentication state, are intentionally ignored.
+  if (formatVersion === BACKUP_FORMAT_VERSION) {
+    const supportedTables = new Set(['config', 'users', 'domain_settings', 'user_revisions', 'folders', 'ciphers', 'attachments', 'webauthn_credentials', ...ORGANIZATION_BACKUP_TABLES]);
+    for (const table of Object.keys(source)) {
+      if (!supportedTables.has(table)) throw new Error(`Backup archive contains an unsupported table: ${table}`);
+    }
+  }
+  // Runtime authentication tables remain outside the explicit restore allowlist.
+  const organizations: Partial<Record<OrganizationBackupTableName, SqlRow[]>> = {};
+  for (const table of ORGANIZATION_BACKUP_TABLES) {
+    if (formatVersion === 1) {
+      if (source[table] != null && (!Array.isArray(source[table]) || (source[table] as unknown[]).length)) {
+        throw new Error('Legacy backup format cannot contain organization data');
+      }
+      organizations[table] = [];
+    } else {
+      organizations[table] = ensureRowArray(source[table], table);
+    }
+  }
   return {
+    ...organizations,
     config: source.config as SqlRow[],
     users: source.users as SqlRow[],
     domain_settings: source.domain_settings as SqlRow[],
@@ -342,10 +354,10 @@ export function parseBackupArchive(
     throw new Error('Backup archive contains invalid JSON metadata');
   }
 
-  if (manifest?.formatVersion !== BACKUP_FORMAT_VERSION) {
+  if (manifest?.formatVersion !== 1 && manifest?.formatVersion !== BACKUP_FORMAT_VERSION) {
     throw new Error('Unsupported backup format version');
   }
-  const db = normalizeParsedBackupDb(rawDb);
+  const db = normalizeParsedBackupDb(rawDb, manifest.formatVersion);
 
   const externalAttachmentKeys = new Set<string>(
     options.allowExternalAttachmentBlobs
@@ -369,11 +381,102 @@ export interface ValidateBackupPayloadOptions {
   allowExternalAttachmentBlobs?: boolean;
 }
 
+function validateOrganizationBackupRows(payload: BackupPayload, userIds: Set<string>): Set<string> {
+  const tables = {} as Record<OrganizationBackupTableName, SqlRow[]>;
+  for (const table of ORGANIZATION_BACKUP_TABLES) {
+    tables[table] = ensureRowArray(payload.db[table] ?? (payload.manifest.formatVersion === 1 ? [] : undefined), table);
+    if (payload.manifest.formatVersion === 1 && tables[table].length) throw new Error('Legacy backup format cannot contain organization data');
+    if (payload.manifest.formatVersion === 2 && payload.manifest.tableCounts?.[table] !== tables[table].length) {
+      throw new Error(`Backup archive table count does not match ${table}`);
+    }
+  }
+  const text = (row: SqlRow, field: string): string => String(row[field] ?? '').trim();
+  const index = (rows: SqlRow[], table: string): Map<string, SqlRow> => {
+    const result = new Map<string, SqlRow>();
+    for (const row of rows) {
+      const id = text(row, 'id');
+      if (!id || result.has(id)) throw new Error(`Backup archive contains an invalid or duplicate ${table} id`);
+      result.set(id, row);
+    }
+    return result;
+  };
+  const organizations = index(tables.organizations, 'organization');
+  for (const row of organizations.values()) {
+    if (!text(row, 'name') || !text(row, 'billing_email') || !text(row, 'created_at') || !text(row, 'updated_at')) {
+      throw new Error('Backup archive contains an invalid organization row');
+    }
+  }
+  const members = index(tables.organization_members, 'organization member');
+  const groups = index(tables.organization_groups, 'organization group');
+  const collections = index(tables.collections, 'collection');
+  const events = index(tables.organization_events, 'organization event');
+  const memberEmails = new Set<string>();
+  const memberUsers = new Set<string>();
+  for (const row of [...members.values(), ...groups.values(), ...collections.values(), ...events.values()]) {
+    if (!organizations.has(text(row, 'organization_id'))) throw new Error('Backup archive contains a row for an unknown organization');
+  }
+  for (const row of members.values()) {
+    const userId = text(row, 'user_id');
+    const emailKey = JSON.stringify([row.organization_id, text(row, 'email').replace(/[A-Z]/g, (letter) => letter.toLowerCase())]);
+    const userKey = JSON.stringify([row.organization_id, userId]);
+    if (!text(row, 'email') || (row.user_id !== null && !userIds.has(userId))
+      || !Number.isInteger(row.type) || ![0, 1, 2, 3].includes(Number(row.type))
+      || !Number.isInteger(row.status) || ![-1, 0, 1, 2].includes(Number(row.status))
+      || !text(row, 'created_at') || !text(row, 'updated_at') || memberEmails.has(emailKey) || (userId && memberUsers.has(userKey))) {
+      throw new Error('Backup archive contains an invalid organization member row');
+    }
+    memberEmails.add(emailKey);
+    if (userId) memberUsers.add(userKey);
+  }
+  for (const row of [...groups.values(), ...collections.values()]) {
+    if (!text(row, 'name')) throw new Error('Backup archive contains an invalid collection or group row');
+  }
+  for (const row of events.values()) {
+    if (!Number.isInteger(row.type) || !text(row, 'date') || (row.actor_user_id !== null && !userIds.has(text(row, 'actor_user_id')))) {
+      throw new Error('Backup archive contains an invalid organization event row');
+    }
+  }
+  const ciphers = new Map(payload.db.ciphers.map((row) => [text(row, 'id'), row]));
+  const links: Array<[OrganizationBackupTableName, string, Map<string, SqlRow>, string, Map<string, SqlRow>]> = [
+    ['organization_group_members', 'group_id', groups, 'member_id', members],
+    ['collection_users', 'collection_id', collections, 'member_id', members],
+    ['collection_groups', 'collection_id', collections, 'group_id', groups],
+    ['cipher_collections', 'cipher_id', ciphers, 'collection_id', collections],
+  ];
+  for (const [table, leftColumn, left, rightColumn, right] of links) {
+    const pairs = new Set<string>();
+    for (const row of tables[table]) {
+      const l = left.get(text(row, leftColumn));
+      const r = right.get(text(row, rightColumn));
+      const pair = JSON.stringify([row[leftColumn], row[rightColumn]]);
+      if (!l || !r || !l.organization_id || l.organization_id !== r.organization_id || pairs.has(pair)) {
+        throw new Error(`Backup archive contains an invalid cross-organization or duplicate ${table} association`);
+      }
+      pairs.add(pair);
+    }
+  }
+  const folders = new Map(payload.db.folders.map((row) => [text(row, 'id'), row]));
+  const preferences = new Set<string>();
+  for (const row of tables.cipher_user_preferences) {
+    const pair = JSON.stringify([row.cipher_id, row.user_id]);
+    const folderId = text(row, 'folder_id');
+    if (!ciphers.has(text(row, 'cipher_id')) || !userIds.has(text(row, 'user_id')) || preferences.has(pair)
+      || (row.folder_id !== null && (!folderId || folders.get(folderId)?.user_id !== row.user_id))) {
+      throw new Error('Backup archive contains an invalid cipher user preference row');
+    }
+    preferences.add(pair);
+  }
+  return new Set(organizations.keys());
+}
+
 export function validateBackupPayloadContents(
   payload: BackupPayload,
   files: Record<string, Uint8Array>,
   options: ValidateBackupPayloadOptions = {}
 ): void {
+  if (payload.manifest?.formatVersion !== 1 && payload.manifest?.formatVersion !== BACKUP_FORMAT_VERSION) {
+    throw new Error('Unsupported backup format version');
+  }
   const configRows = ensureRowArray(payload.db.config, 'config');
   const userRows = ensureRowArray(payload.db.users, 'users');
   const revisionRows = ensureRowArray(payload.db.user_revisions, 'user_revisions');
@@ -430,12 +533,17 @@ export function validateBackupPayloadContents(
     folderIds.add(id);
   }
 
+  const organizationIds = validateOrganizationBackupRows(payload, userIds);
   const cipherIds = new Set<string>();
   for (const row of cipherRows) {
     const id = String(row.id || '').trim();
     const userId = String(row.user_id || '').trim();
     const folderId = String(row.folder_id || '').trim();
-    if (!id || !userIds.has(userId)) throw new Error('Backup archive contains an invalid cipher row');
+    const organizationId = String(row.organization_id ?? '').trim();
+    if (payload.manifest.formatVersion === 1 && row.organization_id != null) throw new Error('Legacy backup format cannot contain organization-owned ciphers');
+    const personal = (payload.manifest.formatVersion === 1 || row.organization_id === null) && userIds.has(userId);
+    const organizational = row.user_id === null && !!organizationId && organizationIds.has(organizationId);
+    if (!id || (!personal && !organizational)) throw new Error('Backup archive contains an invalid cipher row');
     if (folderId && !folderIds.has(folderId)) {
       throw new Error(`Backup archive contains a cipher for an unknown folder: ${folderId}`);
     }
@@ -490,16 +598,27 @@ export async function buildBackupArchive(
     includeAttachments,
   });
   const encoder = new TextEncoder();
-  const [configRows, userRows, domainSettingsRows, revisionRows, folderRows, cipherRows, attachmentRows, accountPasskeyRows] = await Promise.all([
-    queryRows(env.DB, 'SELECT key, value FROM config ORDER BY key ASC'),
-    queryRows(env.DB, 'SELECT id, email, name, master_password_hint, master_password_hash, key, private_key, public_key, kdf_type, kdf_iterations, kdf_memory, kdf_parallelism, security_stamp, role, status, verify_devices, totp_secret, totp_recovery_code, yubikey_key1, yubikey_key2, yubikey_key3, yubikey_key4, yubikey_key5, yubikey_nfc, created_at, updated_at FROM users ORDER BY created_at ASC'),
-    queryRows(env.DB, 'SELECT user_id, equivalent_domains, custom_equivalent_domains, excluded_global_equivalent_domains, updated_at FROM domain_settings ORDER BY user_id ASC'),
-    queryRows(env.DB, 'SELECT user_id, revision_date FROM user_revisions ORDER BY user_id ASC'),
-    queryRows(env.DB, 'SELECT id, user_id, name, created_at, updated_at FROM folders ORDER BY created_at ASC'),
-    queryRows(env.DB, 'SELECT id, user_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at FROM ciphers ORDER BY created_at ASC'),
-    queryRows(env.DB, 'SELECT id, cipher_id, file_name, size, size_name, key FROM attachments ORDER BY cipher_id ASC, id ASC'),
-    queryRows(env.DB, 'SELECT id, user_id, purpose, name, public_key, credential_id, counter, type, aa_guid, transports, encrypted_user_key, encrypted_public_key, encrypted_private_key, supports_prf, created_at, updated_at FROM webauthn_credentials ORDER BY created_at ASC'),
-  ]);
+  const baseQueries = [
+    'SELECT key, value FROM config ORDER BY key ASC',
+    'SELECT id, email, name, master_password_hint, master_password_hash, key, private_key, public_key, kdf_type, kdf_iterations, kdf_memory, kdf_parallelism, security_stamp, role, status, verify_devices, totp_secret, totp_recovery_code, yubikey_key1, yubikey_key2, yubikey_key3, yubikey_key4, yubikey_key5, yubikey_nfc, created_at, updated_at FROM users ORDER BY created_at ASC',
+    'SELECT user_id, equivalent_domains, custom_equivalent_domains, excluded_global_equivalent_domains, updated_at FROM domain_settings ORDER BY user_id ASC',
+    'SELECT user_id, revision_date FROM user_revisions ORDER BY user_id ASC',
+    'SELECT id, user_id, name, created_at, updated_at FROM folders ORDER BY created_at ASC',
+    'SELECT id, user_id, organization_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at FROM ciphers ORDER BY created_at ASC',
+    'SELECT id, cipher_id, file_name, size, size_name, key FROM attachments ORDER BY cipher_id ASC, id ASC',
+    'SELECT id, user_id, purpose, name, public_key, credential_id, counter, type, aa_guid, transports, encrypted_user_key, encrypted_public_key, encrypted_private_key, supports_prf, created_at, updated_at FROM webauthn_credentials ORDER BY created_at ASC',
+  ];
+  const organizationQueries = ORGANIZATION_BACKUP_TABLES.map((table) =>
+    `SELECT ${ORGANIZATION_BACKUP_TABLE_COLUMNS[table].join(', ')} FROM ${table} ORDER BY ${ORGANIZATION_BACKUP_TABLE_COLUMNS[table].join(', ')}`);
+  // D1 executes the entire batch in one transaction. Personal ownership, organization
+  // links, membership keys and attachment metadata must all describe the same snapshot.
+  // Blob contents remain external to this SQL transaction, as with remote backups.
+  const snapshot = await env.DB.batch<SqlRow>([...baseQueries, ...organizationQueries].map((sql) => env.DB.prepare(sql)));
+  const rows = snapshot.map((result) => (result.results || []).map((row) => ({ ...row })));
+  const [configRows, userRows, domainSettingsRows, revisionRows, folderRows, cipherRows, attachmentRows, accountPasskeyRows] = rows;
+  const organizationEntries = ORGANIZATION_BACKUP_TABLES.map((table, index) => [table, rows[baseQueries.length + index]] as const);
+  const organizationRows = Object.fromEntries(organizationEntries) as Record<OrganizationBackupTableName, SqlRow[]>;
+  const organizationCounts = Object.fromEntries(organizationEntries.map(([table, rows]) => [table, rows.length]));
   const exportedConfigRows = sanitizeConfigRowsForExport(configRows);
   const exportedAttachmentRows = includeAttachments ? attachmentRows : [];
   const attachmentBlobs: BackupManifestAttachmentBlob[] = exportedAttachmentRows.map((row) => {
@@ -519,6 +638,7 @@ export async function buildBackupArchive(
     appVersion: APP_VERSION,
     storageKind: getBlobStorageKind(env),
     tableCounts: {
+      ...organizationCounts,
       config: exportedConfigRows.length,
       users: userRows.length,
       domain_settings: domainSettingsRows.length,
@@ -542,6 +662,7 @@ export async function buildBackupArchive(
   const files: Record<string, Uint8Array> = {
     'manifest.json': encoder.encode(JSON.stringify(manifestBase, null, BACKUP_JSON_INDENT)),
     'db.json': encoder.encode(JSON.stringify({
+      ...organizationRows,
       config: exportedConfigRows,
       users: userRows,
       domain_settings: domainSettingsRows,

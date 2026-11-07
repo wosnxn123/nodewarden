@@ -10,6 +10,9 @@ import type { CiphersImportPayload } from '@/lib/api/vault';
 import { t } from '@/lib/i18n';
 import type { AccountPasskeyCredential, AdminInvite, AdminUser, AuditLogListResult, AuditLogSettings, AuthRequest, AuthorizedDevice, Cipher, CustomEquivalentDomain, DomainRules, Folder as VaultFolder, Profile, Send, SendDraft, SessionState, TwoFactorPasskeySettings, VaultDraft, YubiKeyOtpSettings } from '@/lib/types';
 import type { ExportRequest } from '@/lib/export-formats';
+import type { AuthedFetch } from '@/lib/api/shared';
+
+const OrganizationsPage = lazy(() => import('@/components/OrganizationsPage'));
 
 const VaultPage = lazy(() => import('@/components/VaultPage'));
 const SendsPage = lazy(() => import('@/components/SendsPage'));
@@ -39,6 +42,7 @@ export interface AppMainRoutesProps {
   profile: Profile | null;
   profileLoading: boolean;
   session: SessionState | null;
+  organizationFetch?: AuthedFetch;
   mobileLayout: boolean;
   mobileSidebarToggleKey: number;
   themePreference: 'system' | 'light' | 'dark';
@@ -209,6 +213,11 @@ export default function AppMainRoutes(props: AppMainRoutesProps) {
 
   return (
     <Switch>
+      <Route path="/organizations">
+        <Suspense fallback={<RouteContentFallback />}>
+          {props.session && props.profile && props.organizationFetch && <OrganizationsPage session={props.session} profile={props.profile} authedFetch={props.organizationFetch} ciphers={props.decryptedCiphers} onRefresh={props.onRefreshVault} onNotify={props.onNotify} />}
+        </Suspense>
+      </Route>
       <Route path="/security/password-health">
         <div className="stack">
           {props.mobileLayout && (

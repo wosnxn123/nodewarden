@@ -1,12 +1,15 @@
 import { base64ToBytes, decryptBw, decryptStr } from './crypto';
 import { deriveSendKeyParts, looksLikeCipherString } from './app-support';
 import type { Cipher, Folder, Send } from './types';
+import { getOwnerKeyParts } from './organization-crypto';
+import { clearCipherDecodedFields, maskCipherSecrets } from './cipher-permissions';
 
 export interface DecryptVaultCoreArgs {
   folders: Folder[];
   ciphers: Cipher[];
   symEncKeyB64: string;
   symMacKeyB64: string;
+  organizationKeys?: Record<string, string>;
 }
 
 export interface DecryptVaultCoreResult {
@@ -128,28 +131,47 @@ export async function decryptVaultCore(args: DecryptVaultCoreArgs): Promise<Decr
   );
 
   const ciphers = await Promise.all(
-    args.ciphers.map(async (cipher) => {
-      let itemEnc = userEnc;
-      let itemMac = userMac;
+    args.ciphers.map(async (encryptedCipher) => {
+      const cipher = clearCipherDecodedFields(encryptedCipher);
+      let owner;
+      try {
+        owner = getOwnerKeyParts(cipher, { email: '', symEncKey: args.symEncKeyB64, symMacKey: args.symMacKeyB64, organizationKeys: args.organizationKeys });
+      } catch {
+        return { ...cipher, decName: '', decNotes: '', decryptionUnavailable: true };
+      }
+      let itemEnc = owner.enc;
+      let itemMac = owner.mac;
       let usesItemKey = false;
       if (cipher.key) {
         try {
-          const itemKey = await decryptBw(cipher.key, userEnc, userMac);
+          const itemKey = await decryptBw(cipher.key, owner.enc, owner.mac);
           if (itemKey.length >= 64) {
             itemEnc = itemKey.slice(0, 32);
             itemMac = itemKey.slice(32, 64);
             usesItemKey = true;
           }
         } catch {
-          // Keep user key fallback.
+          if (cipher.organizationId) return { ...cipher, decName: '', decNotes: '', decryptionUnavailable: true };
+          // Preserve the personal legacy-key fallback only.
         }
+        if (cipher.organizationId && !usesItemKey) return { ...cipher, decName: '', decNotes: '', decryptionUnavailable: true };
       }
 
       const itemUsesUserKey = sameBytes(itemEnc, userEnc) && sameBytes(itemMac, userMac);
-      const canFallbackToUserKey = usesItemKey;
+      const canFallbackToUserKey = !cipher.organizationId && usesItemKey;
+      let decryptedName: string;
+      try {
+        // Direct-key organization ciphers must also fail closed when their owner
+        // key is wrong; otherwise an unreadable item could be edited as blanks.
+        decryptedName = cipher.organizationId && cipher.name
+          ? await decryptStr(cipher.name, itemEnc, itemMac)
+          : await decryptCipherField(cipher.name || '', itemEnc, itemMac, userEnc, userMac, canFallbackToUserKey);
+      } catch {
+        return { ...cipher, decName: '', decNotes: '', decryptionUnavailable: true };
+      }
       const nextCipher: Cipher = {
         ...cipher,
-        decName: await decryptCipherField(cipher.name || '', itemEnc, itemMac, userEnc, userMac, canFallbackToUserKey),
+        decName: decryptedName,
         decNotes: await decryptCipherField(cipher.notes || '', itemEnc, itemMac, userEnc, userMac, canFallbackToUserKey),
       };
 
@@ -280,7 +302,7 @@ export async function decryptVaultCore(args: DecryptVaultCoreArgs): Promise<Decr
               itemMac,
               userEnc,
               userMac,
-              !itemUsesUserKey
+              !cipher.organizationId && !itemUsesUserKey
             );
             return {
               ...attachment,
@@ -290,7 +312,7 @@ export async function decryptVaultCore(args: DecryptVaultCoreArgs): Promise<Decr
         );
       }
 
-      return nextCipher;
+      return maskCipherSecrets(nextCipher);
     })
   );
 

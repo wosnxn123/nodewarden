@@ -669,7 +669,7 @@ const folderName = useCallback((id: string | null | undefined): string => {
   }, [isMobileLayout]);
 
   const startEdit = useCallback((): void => {
-    if (!selectedCipher) return;
+    if (!selectedCipher || selectedCipher.decryptionUnavailable) return;
     setDraft(draftFromCipher(selectedCipher));
     setIsCreating(false);
     setIsEditing(true);

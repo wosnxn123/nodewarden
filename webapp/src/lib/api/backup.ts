@@ -1,5 +1,6 @@
 import { t } from '../i18n';
 import type {
+  OrganizationBackupImportCounts,
   BackupDestinationConfig,
   BackupDestinationRecord,
   BackupDestinationType,
@@ -98,7 +99,7 @@ export interface RemoteBackupBrowserResponse {
   items: RemoteBackupItem[];
 }
 
-export interface AdminBackupImportCounts {
+export interface AdminBackupImportCounts extends Partial<OrganizationBackupImportCounts> {
   config: number;
   users: number;
   domainSettings?: number;

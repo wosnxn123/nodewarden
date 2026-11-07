@@ -5,6 +5,7 @@ import { handleRequest } from './router';
 import { StorageService } from './services/storage';
 import { applyCors, jsonResponse } from './utils/response';
 import { runScheduledBackupIfDue } from './handlers/backup';
+import { drainOrganizationNotifications } from './services/organization-notifications';
 import {
   isBackendRequestPath,
   isWebVaultHidden,
@@ -109,6 +110,9 @@ export default {
     }
 
     const resp = await handleRequest(normalizedRequest, env);
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(normalizedRequest.method)) {
+      ctx.waitUntil(drainOrganizationNotifications(env).catch(error => console.error('Organization notification retry deferred:', error)));
+    }
     return applyCors(normalizedRequest, resp, env);
   },
 
@@ -119,6 +123,7 @@ export default {
       console.error('Skipping scheduled backup because DB init failed:', dbInitError);
       return;
     }
+    ctx.waitUntil(drainOrganizationNotifications(env).catch(error => console.error('Organization notifications failed:', error)));
     ctx.waitUntil(runScheduledBackupIfDue(env).catch((error) => {
       console.error('Scheduled backup failed:', error);
     }));

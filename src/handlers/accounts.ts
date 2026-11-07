@@ -11,6 +11,8 @@ import { findMatchingTotpCounter, isTotpEnabled } from '../utils/totp';
 import { createRecoveryCode, recoveryCodeEquals } from '../utils/recovery-code';
 import { buildAccountKeys } from '../utils/user-decryption';
 import { buildProfileResponse } from '../utils/profile-response';
+import { getProfileOrganizations } from '../services/organization-access';
+import { saveAccountKeysIfUnchanged } from '../services/account-key-update';
 import { isYubiKeyEnabled, isYubiKeyPublicId, requestYubicoApiCredentials, verifyYubicoOtp, yubiKeyPublicIdFromOtp } from '../utils/yubico-otp';
 import {
   getYubicoCredentials,
@@ -494,7 +496,7 @@ export async function handleGetProfile(request: Request, env: Env, userId: strin
   const storage = new StorageService(env.DB);
   const user = await storage.getUserById(userId);
   if (!user) return errorResponse('User not found', 404);
-  return jsonResponse(buildProfileResponse(user, env));
+  return jsonResponse(buildProfileResponse(user, env, await getProfileOrganizations(env.DB, userId)));
 }
 
 // PUT /api/accounts/profile
@@ -533,7 +535,7 @@ export async function handleUpdateProfile(request: Request, env: Env, userId: st
     },
   });
 
-  return jsonResponse(buildProfileResponse(user, env));
+  return jsonResponse(buildProfileResponse(user, env, await getProfileOrganizations(env.DB, userId)));
 }
 
 // PUT/POST /api/accounts/verify-devices
@@ -616,12 +618,15 @@ export async function handleSetKeys(request: Request, env: Env, userId: string):
     return errorResponse('encryptedPrivateKey is not a valid encrypted string', 400);
   }
 
+  const originalKeyState = { ...user };
   if (body.key) user.key = body.key;
   if (body.encryptedPrivateKey) user.privateKey = body.encryptedPrivateKey;
   if (body.publicKey) user.publicKey = body.publicKey;
   user.updatedAt = new Date().toISOString();
 
-  await storage.saveUser(user);
+  if (!(await saveAccountKeysIfUnchanged(env.DB, originalKeyState, user))) {
+    return errorResponse('Account keys changed concurrently, or organization membership requires coordinated RSA key rotation.', 409);
+  }
   await writeAuditEvent(storage, {
     actorUserId: user.id,
     action: 'account.keys.update',
@@ -764,6 +769,7 @@ export async function handleChangePassword(request: Request, env: Env, userId: s
     return errorResponse('masterPasswordHint must be 120 characters or fewer', 400);
   }
 
+  const originalKeyState = { ...user };
   user.masterPasswordHash = await auth.hashPasswordServer(newMasterPasswordHash);
   user.key = nextKey;
   if (nextPrivateKey) user.privateKey = nextPrivateKey;
@@ -773,7 +779,9 @@ export async function handleChangePassword(request: Request, env: Env, userId: s
   }
   user.securityStamp = generateUUID();
   user.updatedAt = new Date().toISOString();
-  await storage.saveUser(user);
+  if (!(await saveAccountKeysIfUnchanged(env.DB, originalKeyState, user))) {
+    return errorResponse('Account keys changed concurrently, or organization membership requires coordinated RSA key rotation.', 409);
+  }
   await storage.deleteRefreshTokensByUserId(user.id);
   AuthService.invalidateUserCache(user.id);
   await writeAuditEvent(storage, {

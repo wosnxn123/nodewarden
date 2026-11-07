@@ -50,7 +50,7 @@
 | **Multi-user** | ✅ | ✅ | Invite-code registration |
 | Domain rules | ✅ | ✅ | Equivalent domains, global exclusions |
 | Fill-assist | ✅ | ✅ | `POST /fill-assist`|
-| Organizations / collections / roles | ✅ | ❌ | Not implemented |
+| Organizations / collections / roles | ✅ | ⚠️ | Core implementation; [compatibility scope and remaining work](COMPATIBILITY.md) |
 | SSO / SCIM / directory | ✅ | ❌ | Not implemented |
 
 ---

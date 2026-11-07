@@ -46,6 +46,13 @@ function postJob<T>(payload: { kind: 'vault-core'; payload: DecryptVaultCoreArgs
   });
 }
 
+export function clearVaultDecryptWorker(): void {
+  worker?.terminate();
+  worker = null;
+  for (const job of pending.values()) job.reject(new Error('Vault locked'));
+  pending.clear();
+}
+
 export function decryptVaultCoreInWorker(args: DecryptVaultCoreArgs): Promise<DecryptVaultCoreResult> {
   return postJob<DecryptVaultCoreResult>({ kind: 'vault-core', payload: args });
 }

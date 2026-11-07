@@ -1,10 +1,9 @@
-import type { Env } from '../types';
-import type { MicrosoftGraphBackupDestination } from '../../shared/backup-schema';
 import {
   BackupDestinationRecord,
   BackupDestinationType,
   S3BackupDestination,
   WebDavBackupDestination,
+  normalizeBackupEndpointUrl,
 } from './backup-config';
 
 export interface BackupUploadResult {
@@ -33,6 +32,13 @@ export interface RemoteBackupFile {
   fileName: string;
   contentType: string;
   bytes: Uint8Array;
+}
+
+export interface RemoteBackupFileStat {
+  provider: BackupDestinationType;
+  remotePath: string;
+  size: number | null;
+  modifiedAt: string | null;
 }
 
 export interface RemoteBackupFilePutOptions {
@@ -210,7 +216,7 @@ function ensureDestinationConfigReady(destination: BackupDestinationRecord): voi
   if (destination.type === 'webdav') {
     const config = destination.destination as WebDavBackupDestination;
     if (!String(config.baseUrl || '').trim()) throw new Error('WebDAV server URL is required');
-    if (!/^https?:\/\//i.test(String(config.baseUrl || '').trim())) throw new Error('WebDAV server URL must start with http:// or https://');
+    normalizeBackupEndpointUrl(String(config.baseUrl || '').trim(), 'WebDAV server URL');
     if (!String(config.username || '').trim()) throw new Error('WebDAV username is required');
     if (!String(config.password || '')) throw new Error('WebDAV password is required');
     return;
@@ -218,7 +224,7 @@ function ensureDestinationConfigReady(destination: BackupDestinationRecord): voi
   if (destination.type === 's3') {
     const config = destination.destination as S3BackupDestination;
     if (!String(config.endpoint || '').trim()) throw new Error('S3 endpoint is required');
-    if (!/^https?:\/\//i.test(String(config.endpoint || '').trim())) throw new Error('S3 endpoint must start with http:// or https://');
+    normalizeBackupEndpointUrl(String(config.endpoint || '').trim(), 'S3 endpoint');
     if (!String(config.bucket || '').trim()) throw new Error('S3 bucket is required');
     if (!String(config.accessKeyId || '').trim()) throw new Error('S3 access key is required');
     if (!String(config.secretAccessKey || '')) throw new Error('S3 secret key is required');
@@ -231,8 +237,7 @@ function buildWebDavUrl(baseUrl: string, relativePath: string): string {
   return normalized ? `${trimmedBase}/${encodePathSegments(normalized)}` : trimmedBase;
 }
 
-function webDavFullPath(config: WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath: string): string {
+function webDavFullPath(config: WebDavBackupDestination, relativePath: string): string {
   return buildJoinedPath(config.remotePath, normalizeRelativePath(relativePath));
 }
 
@@ -248,7 +253,7 @@ async function ensureWebDavDirectory(baseUrl: string, directoryPath: string, aut
         Authorization: authHeader,
       },
     });
-    if ([200, 201, 204, 301, 302, 405].includes(response.status)) continue;
+    if ([200, 201, 204, 405].includes(response.status)) continue;
     throw new Error(`WebDAV directory creation failed: ${response.status}`);
   }
 }
@@ -271,7 +276,7 @@ async function ensureWebDavDirectoryCached(
         Authorization: authHeader,
       },
     });
-    if ([200, 201, 204, 301, 302, 405].includes(response.status)) {
+    if ([200, 201, 204, 405].includes(response.status)) {
       ensuredDirectories.add(current);
       continue;
     }
@@ -281,7 +286,6 @@ async function ensureWebDavDirectoryCached(
 
 async function putToWebDav(
   config: WebDavBackupDestination,
-  MicrosoftGraphBackupDestination,
   relativePath: string,
   bytes: Uint8Array,
   options: RemoteBackupFilePutOptions = {},
@@ -314,8 +318,7 @@ async function putToWebDav(
   }
 }
 
-async function uploadToWebDav(config: WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, archive: Uint8Array, fileName: string): Promise<BackupUploadResult> {
+async function uploadToWebDav(config: WebDavBackupDestination, archive: Uint8Array, fileName: string): Promise<BackupUploadResult> {
   await putToWebDav(config, fileName, archive, { contentType: 'application/zip' });
   return {
     provider: 'webdav',
@@ -333,8 +336,7 @@ function parseWebDavResponsePath(baseUrl: string, href: string): string {
   return entryPath.startsWith(`${basePath}/`) ? entryPath.slice(basePath.length + 1) : entryPath;
 }
 
-async function listWebDavEntries(config: WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath: string): Promise<RemoteBackupListResult> {
+async function listWebDavEntries(config: WebDavBackupDestination, relativePath: string): Promise<RemoteBackupListResult> {
   const currentPath = normalizeRelativePath(relativePath);
   const targetFullPath = webDavFullPath(config, currentPath);
   const authHeader = toBasicAuthHeader(config.username, config.password);
@@ -399,8 +401,7 @@ async function listWebDavEntries(config: WebDavBackupDestination,
   };
 }
 
-async function downloadFromWebDav(config: WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath: string): Promise<RemoteBackupFile> {
+async function downloadFromWebDav(config: WebDavBackupDestination, relativePath: string): Promise<RemoteBackupFile> {
   const normalized = normalizeRelativePath(relativePath);
   if (!normalized || normalized.endsWith('/')) {
     throw new Error('Please select a backup file');
@@ -425,8 +426,7 @@ async function downloadFromWebDav(config: WebDavBackupDestination,
   };
 }
 
-async function deleteFromWebDav(config: WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath: string): Promise<void> {
+async function deleteFromWebDav(config: WebDavBackupDestination, relativePath: string): Promise<void> {
   const authHeader = toBasicAuthHeader(config.username, config.password);
   const remotePath = webDavFullPath(config, relativePath);
   const response = await fetch(buildWebDavUrl(config.baseUrl, remotePath), {
@@ -440,8 +440,11 @@ async function deleteFromWebDav(config: WebDavBackupDestination,
   }
 }
 
-async function existsInWebDav(config: WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath: string): Promise<boolean> {
+async function existsInWebDav(config: WebDavBackupDestination, relativePath: string): Promise<boolean> {
+  return (await statWebDavFile(config, relativePath)) !== null;
+}
+
+async function statWebDavFile(config: WebDavBackupDestination, relativePath: string): Promise<RemoteBackupFileStat | null> {
   const authHeader = toBasicAuthHeader(config.username, config.password);
   const remotePath = webDavFullPath(config, relativePath);
   const response = await fetch(buildWebDavUrl(config.baseUrl, remotePath), {
@@ -450,15 +453,40 @@ async function existsInWebDav(config: WebDavBackupDestination,
       Authorization: authHeader,
     },
   });
-  if (response.status === 404) return false;
+  if (response.status === 404) return null;
   if (!response.ok) {
     throw new Error(`WebDAV existence check failed: ${response.status}`);
   }
-  return true;
+  const size = Number(response.headers.get('Content-Length') || '');
+  return {
+    provider: 'webdav',
+    remotePath: normalizeRelativePath(relativePath),
+    size: Number.isFinite(size) ? size : null,
+    modifiedAt: parseHttpDate(response.headers.get('Last-Modified') || ''),
+  };
+}
+
+function isBucketHostedS3Endpoint(endpoint: URL, bucket: string): boolean {
+  const hostname = endpoint.hostname.toLowerCase();
+  const bucketName = bucket.trim().toLowerCase();
+  return !!bucketName && (hostname === bucketName || hostname.startsWith(`${bucketName}.`));
 }
 
 function s3BucketBaseUrl(config: S3BackupDestination): URL {
-  return new URL(`${config.endpoint.replace(/\/+$/, '')}/${encodeURIComponent(config.bucket)}`);
+  const endpoint = new URL(config.endpoint.replace(/\/+$/, ''));
+  const bucket = config.bucket.trim();
+
+  if (config.addressingStyle === 'virtual-hosted-style') {
+    if (isBucketHostedS3Endpoint(endpoint, bucket)) return endpoint;
+    endpoint.hostname = `${bucket}.${endpoint.hostname}`;
+    return endpoint;
+  }
+
+  return new URL(`${endpoint.toString().replace(/\/+$/, '')}/${encodeURIComponent(bucket)}`);
+}
+
+function s3ObjectUrl(config: S3BackupDestination, objectKey: string): URL {
+  return new URL(`${s3BucketBaseUrl(config).toString().replace(/\/+$/, '')}/${encodePathSegments(objectKey)}`);
 }
 
 function normalizeS3ObjectKey(config: S3BackupDestination, relativePath: string): string {
@@ -491,7 +519,7 @@ async function signedS3Request(
     config.region || 'auto'
   );
 
-  return fetch(url.toString(), {
+  return fetch(url, {
     method,
     headers: {
       Authorization: authorization,
@@ -510,7 +538,7 @@ async function putToS3(
   options: RemoteBackupFilePutOptions = {}
 ): Promise<void> {
   const objectKey = normalizeS3ObjectKey(config, relativePath);
-  const url = new URL(`${s3BucketBaseUrl(config).toString()}/${encodePathSegments(objectKey)}`);
+  const url = s3ObjectUrl(config, objectKey);
   const response = await signedS3Request(config, 'PUT', url, bytes, options.contentType);
 
   if (!response.ok) {
@@ -530,61 +558,68 @@ async function listS3Entries(config: S3BackupDestination, relativePath: string):
   const currentPath = normalizeRelativePath(relativePath);
   const targetPrefixBase = normalizeS3ObjectKey(config, currentPath);
   const targetPrefix = trimSlashes(targetPrefixBase) ? `${trimSlashes(targetPrefixBase)}/` : '';
-  const url = s3BucketBaseUrl(config);
-  url.searchParams.set('list-type', '2');
-  url.searchParams.set('delimiter', '/');
-  if (targetPrefix) url.searchParams.set('prefix', targetPrefix);
-
-  const response = await signedS3Request(config, 'GET', url);
-  if (!response.ok) {
-    throw new Error(`S3 listing failed: ${response.status}`);
-  }
-
-  const xml = await response.text();
   const rootPrefix = trimSlashes(config.rootPath);
   const items: RemoteBackupItem[] = [];
+  let continuationToken = '';
 
-  for (const prefix of extractXmlBlocks(xml, 'CommonPrefixes')) {
-    const fullPrefix = trimSlashes(extractXmlFirst(prefix, 'Prefix') || '');
-    if (!fullPrefix) continue;
-    const relative = rootPrefix
-      ? fullPrefix === rootPrefix
-        ? ''
-        : fullPrefix.startsWith(`${rootPrefix}/`)
-          ? fullPrefix.slice(rootPrefix.length + 1)
+  do {
+    const url = s3BucketBaseUrl(config);
+    url.searchParams.set('list-type', '2');
+    url.searchParams.set('delimiter', '/');
+    if (targetPrefix) url.searchParams.set('prefix', targetPrefix);
+    if (continuationToken) url.searchParams.set('continuation-token', continuationToken);
+
+    const response = await signedS3Request(config, 'GET', url);
+    if (!response.ok) {
+      throw new Error(`S3 listing failed: ${response.status}`);
+    }
+
+    const xml = await response.text();
+
+    for (const prefix of extractXmlBlocks(xml, 'CommonPrefixes')) {
+      const fullPrefix = trimSlashes(extractXmlFirst(prefix, 'Prefix') || '');
+      if (!fullPrefix) continue;
+      const relative = rootPrefix
+        ? fullPrefix === rootPrefix
+          ? ''
+          : fullPrefix.startsWith(`${rootPrefix}/`)
+            ? fullPrefix.slice(rootPrefix.length + 1)
+            : ''
+        : fullPrefix;
+      const normalizedRelative = trimSlashes(relative);
+      if (!normalizedRelative) continue;
+      const itemPath = normalizedRelative.replace(/\/+$/, '');
+      if ((parentPath(itemPath) || '') !== currentPath) continue;
+      items.push({
+        path: itemPath,
+        name: basename(itemPath) || itemPath,
+        isDirectory: true,
+        size: null,
+        modifiedAt: null,
+      });
+    }
+
+    for (const content of extractXmlBlocks(xml, 'Contents')) {
+      const fullKey = trimSlashes(extractXmlFirst(content, 'Key') || '');
+      if (!fullKey || (targetPrefix && fullKey === trimSlashes(targetPrefix))) continue;
+      const relative = rootPrefix
+        ? fullKey.startsWith(`${rootPrefix}/`)
+          ? fullKey.slice(rootPrefix.length + 1)
           : ''
-      : fullPrefix;
-    const normalizedRelative = trimSlashes(relative);
-    if (!normalizedRelative) continue;
-    const itemPath = normalizedRelative.replace(/\/+$/, '');
-    if ((parentPath(itemPath) || '') !== currentPath) continue;
-    items.push({
-      path: itemPath,
-      name: basename(itemPath) || itemPath,
-      isDirectory: true,
-      size: null,
-      modifiedAt: null,
-    });
-  }
+        : fullKey;
+      const normalizedRelative = trimSlashes(relative);
+      if (!normalizedRelative || (parentPath(normalizedRelative) || '') !== currentPath) continue;
+      items.push({
+        path: normalizedRelative,
+        name: basename(normalizedRelative) || normalizedRelative,
+        isDirectory: false,
+        size: Number(extractXmlFirst(content, 'Size') || 0) || null,
+        modifiedAt: parseHttpDate(extractXmlFirst(content, 'LastModified') || '') || null,
+      });
+    }
 
-  for (const content of extractXmlBlocks(xml, 'Contents')) {
-    const fullKey = trimSlashes(extractXmlFirst(content, 'Key') || '');
-    if (!fullKey || (targetPrefix && fullKey === trimSlashes(targetPrefix))) continue;
-    const relative = rootPrefix
-      ? fullKey.startsWith(`${rootPrefix}/`)
-        ? fullKey.slice(rootPrefix.length + 1)
-        : ''
-      : fullKey;
-    const normalizedRelative = trimSlashes(relative);
-    if (!normalizedRelative || (parentPath(normalizedRelative) || '') !== currentPath) continue;
-    items.push({
-      path: normalizedRelative,
-      name: basename(normalizedRelative) || normalizedRelative,
-      isDirectory: false,
-      size: Number(extractXmlFirst(content, 'Size') || 0) || null,
-      modifiedAt: parseHttpDate(extractXmlFirst(content, 'LastModified') || '') || null,
-    });
-  }
+    continuationToken = extractXmlFirst(xml, 'NextContinuationToken') || '';
+  } while (continuationToken);
 
   const deduped = new Map<string, RemoteBackupItem>();
   for (const item of items) deduped.set(`${item.isDirectory ? 'd' : 'f'}:${item.path}`, item);
@@ -603,7 +638,7 @@ async function downloadFromS3(config: S3BackupDestination, relativePath: string)
     throw new Error('Please select a backup file');
   }
   const objectKey = normalizeS3ObjectKey(config, normalized);
-  const url = new URL(`${s3BucketBaseUrl(config).toString()}/${encodePathSegments(objectKey)}`);
+  const url = s3ObjectUrl(config, objectKey);
   const response = await signedS3Request(config, 'GET', url);
   if (!response.ok) {
     throw new Error(`S3 download failed: ${response.status}`);
@@ -619,7 +654,7 @@ async function downloadFromS3(config: S3BackupDestination, relativePath: string)
 
 async function deleteFromS3(config: S3BackupDestination, relativePath: string): Promise<void> {
   const objectKey = normalizeS3ObjectKey(config, relativePath);
-  const url = new URL(`${s3BucketBaseUrl(config).toString()}/${encodePathSegments(objectKey)}`);
+  const url = s3ObjectUrl(config, objectKey);
   const response = await signedS3Request(config, 'DELETE', url);
   if (!response.ok && response.status !== 404) {
     throw new Error(`S3 delete failed: ${response.status}`);
@@ -627,217 +662,28 @@ async function deleteFromS3(config: S3BackupDestination, relativePath: string): 
 }
 
 async function existsInS3(config: S3BackupDestination, relativePath: string): Promise<boolean> {
+  return (await statS3File(config, relativePath)) !== null;
+}
+
+async function statS3File(config: S3BackupDestination, relativePath: string): Promise<RemoteBackupFileStat | null> {
   const objectKey = normalizeS3ObjectKey(config, relativePath);
-  const url = new URL(`${s3BucketBaseUrl(config).toString()}/${encodePathSegments(objectKey)}`);
+  const url = s3ObjectUrl(config, objectKey);
   const response = await signedS3Request(config, 'HEAD', url);
-  if (response.status === 404) return false;
+  if (response.status === 404) return null;
   if (!response.ok) {
     throw new Error(`S3 existence check failed: ${response.status}`);
   }
-  return true;
-}
-
-
-function graphEnv(env: Env | undefined, name: string): string {
-  const value = env ? (env as unknown as Record<string, string | undefined>)[name] : '';
-  const normalized = String(value || '').trim();
-  if (!normalized) throw new Error(`${name} is required for Microsoft Graph backups`);
-  return normalized;
-}
-
-function graphBackupRootPath(config: MicrosoftGraphBackupDestination): string {
-  return trimSlashes(config.rootPath || 'nodewarden-backups') || 'nodewarden-backups';
-}
-
-function graphBackupFullPath(config: MicrosoftGraphBackupDestination, relativePath: string): string {
-  return buildJoinedPath(graphBackupRootPath(config), normalizeRelativePath(relativePath));
-}
-
-async function getMicrosoftGraphToken(env: Env | undefined): Promise<string> {
-  const tenantId = graphEnv(env, 'MICROSOFT_GRAPH_TENANT_ID');
-  const clientId = graphEnv(env, 'MICROSOFT_GRAPH_CLIENT_ID');
-  const clientSecret = graphEnv(env, 'MICROSOFT_GRAPH_CLIENT_SECRET');
-
-  const body = new URLSearchParams({
-    client_id: clientId,
-    scope: 'https://graph.microsoft.com/.default',
-    client_secret: clientSecret,
-    grant_type: 'client_credentials',
-  });
-
-  const response = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-
-  const payload = await response.json().catch(() => ({})) as { access_token?: string; error?: string; error_description?: string };
-  if (!response.ok || !payload.access_token) {
-    throw new Error(`Microsoft Graph token failed: ${payload.error_description || payload.error || response.status}`);
-  }
-  return payload.access_token;
-}
-
-function graphDriveId(env: Env | undefined): string {
-  return graphEnv(env, 'MICROSOFT_GRAPH_DRIVE_ID');
-}
-
-function graphItemUrl(env: Env | undefined, fullPath: string): string {
-  return `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(graphDriveId(env))}/root:/${encodePathSegments(fullPath)}`;
-}
-
-function graphContentUrl(env: Env | undefined, fullPath: string): string {
-  return `${graphItemUrl(env, fullPath)}:/content`;
-}
-
-function graphChildrenUrl(env: Env | undefined, fullPath: string): string {
-  const normalized = trimSlashes(fullPath);
-  if (!normalized) {
-    return `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(graphDriveId(env))}/root/children`;
-  }
-  return `${graphItemUrl(env, normalized)}:/children`;
-}
-
-async function graphFetch(
-  env: Env | undefined,
-  method: string,
-  url: string,
-  body?: BodyInit | null,
-  contentType?: string
-): Promise<Response> {
-  const token = await getMicrosoftGraphToken(env);
-  return fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(contentType ? { 'Content-Type': contentType } : {}),
-    },
-    body,
-  });
-}
-
-async function ensureMicrosoftGraphDirectory(env: Env | undefined, directoryPath: string): Promise<void> {
-  const segments = trimSlashes(directoryPath).split('/').filter(Boolean);
-  let parent = '';
-  for (const segment of segments) {
-    const response = await graphFetch(
-      env,
-      'POST',
-      graphChildrenUrl(env, parent),
-      JSON.stringify({
-        name: segment,
-        folder: {},
-        '@microsoft.graph.conflictBehavior': 'fail',
-      }),
-      'application/json'
-    );
-    if (response.ok || response.status === 409) {
-      parent = buildJoinedPath(parent, segment);
-      continue;
-    }
-    throw new Error(`Microsoft Graph directory creation failed: ${response.status}`);
-  }
-}
-
-async function putToMicrosoftGraph(
-  env: Env | undefined,
-  config: MicrosoftGraphBackupDestination,
-  relativePath: string,
-  bytes: Uint8Array,
-  options: RemoteBackupFilePutOptions = {}
-): Promise<void> {
-  const fullPath = graphBackupFullPath(config, relativePath);
-  const directory = parentPath(fullPath);
-  if (directory) await ensureMicrosoftGraphDirectory(env, directory);
-  const response = await graphFetch(
-    env,
-    'PUT',
-    graphContentUrl(env, fullPath),
-    bytes,
-    options.contentType || 'application/octet-stream'
-  );
-  if (!response.ok) {
-    throw new Error(`Microsoft Graph upload failed: ${response.status}`);
-  }
-}
-
-async function listMicrosoftGraphEntries(
-  env: Env | undefined,
-  config: MicrosoftGraphBackupDestination,
-  relativePath: string
-): Promise<RemoteBackupListResult> {
-  const currentPath = normalizeRelativePath(relativePath);
-  const fullPath = graphBackupFullPath(config, currentPath);
-  const items: RemoteBackupItem[] = [];
-  let nextUrl: string | null = graphChildrenUrl(env, fullPath);
-
-  while (nextUrl) {
-    const response = await graphFetch(env, 'GET', nextUrl);
-    if (response.status === 404) {
-      return { provider: 'microsoft_graph', currentPath, parentPath: parentPath(currentPath), items: [] };
-    }
-    if (!response.ok) throw new Error(`Microsoft Graph listing failed: ${response.status}`);
-    const payload = await response.json() as { value?: Array<Record<string, unknown>>; '@odata.nextLink'?: string };
-    for (const entry of payload.value || []) {
-      const name = String(entry.name || '').trim();
-      if (!name) continue;
-      const isDirectory = !!entry.folder;
-      const path = buildJoinedPath(currentPath, name);
-      const size = !isDirectory && Number.isFinite(Number(entry.size)) ? Number(entry.size) : null;
-      const modifiedAt = parseHttpDate(String(entry.lastModifiedDateTime || ''));
-      items.push({ path, name, isDirectory, size, modifiedAt });
-    }
-    nextUrl = payload['@odata.nextLink'] || null;
-  }
-
-  return { provider: 'microsoft_graph', currentPath, parentPath: parentPath(currentPath), items: sortRemoteItems(items) };
-}
-
-async function downloadFromMicrosoftGraph(
-  env: Env | undefined,
-  config: MicrosoftGraphBackupDestination,
-  relativePath: string
-): Promise<RemoteBackupFile> {
-  const normalized = normalizeRelativePath(relativePath);
-  if (!normalized || normalized.endsWith('/')) throw new Error('Please select a backup file');
-  const response = await graphFetch(env, 'GET', graphContentUrl(env, graphBackupFullPath(config, normalized)));
-  if (!response.ok) throw new Error(`Microsoft Graph download failed: ${response.status}`);
+  const size = Number(response.headers.get('Content-Length') || '');
   return {
-    provider: 'microsoft_graph',
-    remotePath: normalized,
-    fileName: basename(normalized) || 'backup.zip',
-    contentType: String(response.headers.get('Content-Type') || 'application/zip').trim() || 'application/zip',
-    bytes: new Uint8Array(await response.arrayBuffer()),
+    provider: 's3',
+    remotePath: normalizeRelativePath(relativePath),
+    size: Number.isFinite(size) ? size : null,
+    modifiedAt: parseHttpDate(response.headers.get('Last-Modified') || ''),
   };
 }
 
-async function deleteFromMicrosoftGraph(
-  env: Env | undefined,
-  config: MicrosoftGraphBackupDestination,
-  relativePath: string
-): Promise<void> {
-  const normalized = normalizeRelativePath(relativePath);
-  const response = await graphFetch(env, 'DELETE', graphItemUrl(env, graphBackupFullPath(config, normalized)));
-  if (!response.ok && response.status !== 404) {
-    throw new Error(`Microsoft Graph delete failed: ${response.status}`);
-  }
-}
-
-async function existsInMicrosoftGraph(
-  env: Env | undefined,
-  config: MicrosoftGraphBackupDestination,
-  relativePath: string
-): Promise<boolean> {
-  const normalized = normalizeRelativePath(relativePath);
-  const response = await graphFetch(env, 'GET', graphItemUrl(env, graphBackupFullPath(config, normalized)));
-  if (response.status === 404) return false;
-  if (!response.ok) throw new Error(`Microsoft Graph existence check failed: ${response.status}`);
-  return true;
-}
-
-
 interface ConfiguredDestinationAdapter {
-  provider: BackupDestinationType;
+  provider: 'webdav' | 's3';
   config: WebDavBackupDestination | S3BackupDestination;
   upload: (config: WebDavBackupDestination | S3BackupDestination, archive: Uint8Array, fileName: string) => Promise<BackupUploadResult>;
   putFile: (config: WebDavBackupDestination | S3BackupDestination, relativePath: string, bytes: Uint8Array, options?: RemoteBackupFilePutOptions) => Promise<void>;
@@ -845,6 +691,7 @@ interface ConfiguredDestinationAdapter {
   download: (config: WebDavBackupDestination | S3BackupDestination, relativePath: string) => Promise<RemoteBackupFile>;
   deleteFile: (config: WebDavBackupDestination | S3BackupDestination, relativePath: string) => Promise<void>;
   exists: (config: WebDavBackupDestination | S3BackupDestination, relativePath: string) => Promise<boolean>;
+  stat: (config: WebDavBackupDestination | S3BackupDestination, relativePath: string) => Promise<RemoteBackupFileStat | null>;
 }
 
 export interface RemoteBackupTransferSession {
@@ -855,6 +702,7 @@ export interface RemoteBackupTransferSession {
   download(relativePath: string): Promise<RemoteBackupFile>;
   deleteFile(relativePath: string): Promise<void>;
   exists(relativePath: string): Promise<boolean>;
+  stat(relativePath: string): Promise<RemoteBackupFileStat | null>;
 }
 
 function resolveConfiguredDestinationAdapter(
@@ -866,19 +714,13 @@ function resolveConfiguredDestinationAdapter(
     return {
       provider: 'webdav',
       config: destination.destination as WebDavBackupDestination,
-  MicrosoftGraphBackupDestination,
-      upload: (config, archive, fileName) => uploadToWebDav(config as WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, archive, fileName),
-      putFile: (config, relativePath, bytes, options) => putToWebDav(config as WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath, bytes, options),
-      list: (config, relativePath) => listWebDavEntries(config as WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath),
-      download: (config, relativePath) => downloadFromWebDav(config as WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath),
-      deleteFile: (config, relativePath) => deleteFromWebDav(config as WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath),
-      exists: (config, relativePath) => existsInWebDav(config as WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, relativePath),
+      upload: (config, archive, fileName) => uploadToWebDav(config as WebDavBackupDestination, archive, fileName),
+      putFile: (config, relativePath, bytes, options) => putToWebDav(config as WebDavBackupDestination, relativePath, bytes, options),
+      list: (config, relativePath) => listWebDavEntries(config as WebDavBackupDestination, relativePath),
+      download: (config, relativePath) => downloadFromWebDav(config as WebDavBackupDestination, relativePath),
+      deleteFile: (config, relativePath) => deleteFromWebDav(config as WebDavBackupDestination, relativePath),
+      exists: (config, relativePath) => existsInWebDav(config as WebDavBackupDestination, relativePath),
+      stat: (config, relativePath) => statWebDavFile(config as WebDavBackupDestination, relativePath),
     };
   }
   if (destination.type === 's3') {
@@ -891,45 +733,21 @@ function resolveConfiguredDestinationAdapter(
       download: (config, relativePath) => downloadFromS3(config as S3BackupDestination, relativePath),
       deleteFile: (config, relativePath) => deleteFromS3(config as S3BackupDestination, relativePath),
       exists: (config, relativePath) => existsInS3(config as S3BackupDestination, relativePath),
+      stat: (config, relativePath) => statS3File(config as S3BackupDestination, relativePath),
     };
   }
 
   throw new Error('Unsupported backup destination type');
 }
 
-export function createRemoteBackupTransferSession(destination: BackupDestinationRecord, env?: Env): RemoteBackupTransferSession {
-  if (destination.type === 'microsoft_graph') {
-    const config = destination.destination as MicrosoftGraphBackupDestination;
-    graphEnv(env, 'MICROSOFT_GRAPH_TENANT_ID');
-    graphEnv(env, 'MICROSOFT_GRAPH_CLIENT_ID');
-    graphEnv(env, 'MICROSOFT_GRAPH_CLIENT_SECRET');
-    graphEnv(env, 'MICROSOFT_GRAPH_DRIVE_ID');
-
-    return {
-      provider: 'microsoft_graph',
-      uploadArchive: async (archive: Uint8Array, fileName: string) => {
-        await putToMicrosoftGraph(env, config, fileName, archive, { contentType: 'application/zip' });
-        return { provider: 'microsoft_graph', remotePath: graphBackupFullPath(config, fileName) };
-      },
-      putFile: async (relativePath: string, bytes: Uint8Array, options: RemoteBackupFilePutOptions = {}) => {
-        await putToMicrosoftGraph(env, config, relativePath, bytes, options);
-      },
-      list: async (relativePath: string) => listMicrosoftGraphEntries(env, config, relativePath),
-      download: async (relativePath: string) => downloadFromMicrosoftGraph(env, config, relativePath),
-      deleteFile: async (relativePath: string) => deleteFromMicrosoftGraph(env, config, relativePath),
-      exists: async (relativePath: string) => existsInMicrosoftGraph(env, config, relativePath),
-    };
-  }
-
-
+export function createRemoteBackupTransferSession(destination: BackupDestinationRecord): RemoteBackupTransferSession {
   const adapter = resolveConfiguredDestinationAdapter(destination);
   const ensuredDirectories = adapter.provider === 'webdav' ? new Set<string>() : null;
 
   const putFile = async (relativePath: string, bytes: Uint8Array, options: RemoteBackupFilePutOptions = {}): Promise<void> => {
     const normalized = normalizeRelativePath(relativePath);
     if (adapter.provider === 'webdav' && ensuredDirectories) {
-      await putToWebDav(adapter.config as WebDavBackupDestination,
-  MicrosoftGraphBackupDestination, normalized, bytes, options, ensuredDirectories);
+      await putToWebDav(adapter.config as WebDavBackupDestination, normalized, bytes, options, ensuredDirectories);
       return;
     }
     await adapter.putFile(adapter.config, normalized, bytes, options);
@@ -951,45 +769,44 @@ export function createRemoteBackupTransferSession(destination: BackupDestination
     download: async (relativePath: string) => adapter.download(adapter.config, relativePath),
     deleteFile: async (relativePath: string) => adapter.deleteFile(adapter.config, normalizeRelativePath(relativePath)),
     exists: async (relativePath: string) => adapter.exists(adapter.config, normalizeRelativePath(relativePath)),
+    stat: async (relativePath: string) => adapter.stat(adapter.config, normalizeRelativePath(relativePath)),
   };
 }
 
 export async function uploadBackupArchive(
   destination: BackupDestinationRecord,
   archive: Uint8Array,
-  fileName: string,
-  env?: Env
+  fileName: string
 ): Promise<BackupUploadResult> {
-  return createRemoteBackupTransferSession(destination, env).uploadArchive(archive, fileName);
+  return createRemoteBackupTransferSession(destination).uploadArchive(archive, fileName);
 }
 
-export async function listRemoteBackupEntries(destination: BackupDestinationRecord, env: Env | undefined, relativePath: string): Promise<RemoteBackupListResult> {
-  return createRemoteBackupTransferSession(destination, env).list(relativePath);
+export async function listRemoteBackupEntries(destination: BackupDestinationRecord, relativePath: string): Promise<RemoteBackupListResult> {
+  return createRemoteBackupTransferSession(destination).list(relativePath);
 }
 
-export async function downloadRemoteBackupFile(destination: BackupDestinationRecord, env: Env | undefined, relativePath: string): Promise<RemoteBackupFile> {
-  return createRemoteBackupTransferSession(destination, env).download(relativePath);
+export async function downloadRemoteBackupFile(destination: BackupDestinationRecord, relativePath: string): Promise<RemoteBackupFile> {
+  return createRemoteBackupTransferSession(destination).download(relativePath);
 }
 
-export async function deleteRemoteBackupFile(destination: BackupDestinationRecord, env: Env | undefined, relativePath: string): Promise<void> {
+export async function deleteRemoteBackupFile(destination: BackupDestinationRecord, relativePath: string): Promise<void> {
   const normalized = ensureRemoteRestoreCandidate(relativePath);
-  await createRemoteBackupTransferSession(destination, env).deleteFile(normalized);
+  await createRemoteBackupTransferSession(destination).deleteFile(normalized);
 }
 
-export async function remoteBackupFileExists(destination: BackupDestinationRecord, env: Env | undefined, relativePath: string): Promise<boolean> {
+export async function remoteBackupFileExists(destination: BackupDestinationRecord, relativePath: string): Promise<boolean> {
   const normalized = normalizeRelativePath(relativePath);
-  return createRemoteBackupTransferSession(destination, env).exists(normalized);
+  return createRemoteBackupTransferSession(destination).exists(normalized);
 }
 
 export async function uploadRemoteBackupFile(
   destination: BackupDestinationRecord,
-  env: Env | undefined,
   relativePath: string,
   bytes: Uint8Array,
   options: RemoteBackupFilePutOptions = {}
 ): Promise<void> {
   const normalized = normalizeRelativePath(relativePath);
-  await createRemoteBackupTransferSession(destination, env).putFile(normalized, bytes, options);
+  await createRemoteBackupTransferSession(destination).putFile(normalized, bytes, options);
 }
 
 function compareBackupItemsByRecency(a: RemoteBackupItem, b: RemoteBackupItem, preferredFileName?: string): number {
@@ -1006,7 +823,6 @@ function compareBackupItemsByRecency(a: RemoteBackupItem, b: RemoteBackupItem, p
 
 export async function pruneRemoteBackupArchives(
   destination: BackupDestinationRecord,
-  env: Env | undefined,
   retentionCount: number | null,
   preferredFileName?: string
 ): Promise<number> {

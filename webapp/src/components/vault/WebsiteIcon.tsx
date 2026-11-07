@@ -9,6 +9,8 @@ import {
   subscribeWebsiteIconStatus,
 } from '@/lib/website-icon-cache';
 import { demoBrandIconUrl } from '@/lib/demo-brand-icons';
+import { getCurrentNetworkStatus, subscribeNetworkStatus } from '@/lib/network-status';
+import { areWebsiteIconsEnabled } from '@/lib/website-icon-settings';
 import { firstCipherUri, hostFromUri, websiteIconUrl } from '@/lib/website-utils';
 
 const ICON_LOAD_ROOT_MARGIN = '180px 0px';
@@ -21,15 +23,19 @@ interface WebsiteIconProps {
 
 export default function WebsiteIcon(props: WebsiteIconProps) {
   const host = useMemo(() => hostFromUri(firstCipherUri(props.cipher)), [props.cipher]);
-  const src = host ? websiteIconUrl(host) : '';
+  const iconsEnabled = areWebsiteIconsEnabled();
+  const src = iconsEnabled && host ? websiteIconUrl(host) : '';
   const nodeRef = useRef<HTMLSpanElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(() => (host ? getWebsiteIconStatus(host) === 'loaded' : true));
   const [status, setStatus] = useState(() => (host ? getWebsiteIconStatus(host) : 'idle'));
   const [imageUrl, setImageUrl] = useState(() => (host ? getWebsiteIconImageUrl(host) : ''));
+  const [networkStatus, setNetworkStatus] = useState(getCurrentNetworkStatus);
   const demoIconUrl = SHOULD_LOAD_DEMO_BRAND_ICONS && host ? demoBrandIconUrl(host) : '';
 
+  useEffect(() => subscribeNetworkStatus(setNetworkStatus), []);
+
   useEffect(() => {
-    if (!host) {
+    if (!host || !iconsEnabled) {
       setShouldLoad(true);
       setStatus('idle');
       setImageUrl('');
@@ -43,7 +49,7 @@ export default function WebsiteIcon(props: WebsiteIconProps) {
       setStatus(next);
       setImageUrl(getWebsiteIconImageUrl(host));
     });
-  }, [host]);
+  }, [host, iconsEnabled]);
 
   useEffect(() => {
     if (!host || shouldLoad || status === 'loaded' || status === 'error') return;
@@ -77,9 +83,11 @@ export default function WebsiteIcon(props: WebsiteIconProps) {
   useEffect(() => {
     if (SHOULD_LOAD_DEMO_BRAND_ICONS) return;
     if (demoIconUrl) return;
+    if (!iconsEnabled) return;
+    if (networkStatus !== 'online') return;
     if (!host || !src || !shouldLoad || status !== 'idle') return;
     beginWebsiteIconLoad(host, src);
-  }, [demoIconUrl, host, src, shouldLoad, status]);
+  }, [demoIconUrl, host, iconsEnabled, networkStatus, src, shouldLoad, status]);
 
   if (demoIconUrl) {
     return (
@@ -95,7 +103,7 @@ export default function WebsiteIcon(props: WebsiteIconProps) {
     );
   }
 
-  if (!host || status === 'error') {
+  if (!host || !iconsEnabled || status === 'error') {
     return <span className="list-icon-fallback">{props.fallback ?? <Globe size={18} />}</span>;
   }
 

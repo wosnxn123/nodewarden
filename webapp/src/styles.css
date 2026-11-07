@@ -2,24 +2,24 @@
 @import './styles/base.css';
 @import './styles/auth.css';
 @import './styles/forms.css';
+@import './styles/generator.css';
+@import './styles/password-security.css';
 @import './styles/shell.css';
 @import './styles/vault.css';
 @import './styles/management.css';
 @import './styles/overlays.css';
 @import './styles/motion.css';
+@import './styles/skeleton.css';
 @import './styles/responsive.css';
 @import './styles/dark.css';
 
 /* Unified product polish: refined, smooth, comfortable surfaces across desktop, mobile, and dark mode. */
 
 /* ── surface consistency ── */
-.app-shell,
 .auth-card,
 .dialog-card,
 .card,
 .list-panel,
-.sidebar-block,
-.settings-subcard,
 .backup-operations-sidebar,
 .backup-destination-sidebar,
 .backup-detail-panel,
@@ -35,12 +35,6 @@
   border-radius: var(--radius-lg);
   background: var(--panel);
   box-shadow: var(--shadow-sm);
-}
-
-.app-shell {
-  background: var(--panel-soft);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-lg);
 }
 
 .topbar,
@@ -105,12 +99,10 @@
 }
 
 /* ── dark mode surface resets ── */
-:root[data-theme='dark'] .app-shell,
 :root[data-theme='dark'] .auth-card,
 :root[data-theme='dark'] .dialog-card,
 :root[data-theme='dark'] .card,
 :root[data-theme='dark'] .list-panel,
-:root[data-theme='dark'] .sidebar-block,
 :root[data-theme='dark'] .settings-subcard,
 :root[data-theme='dark'] .backup-operations-sidebar,
 :root[data-theme='dark'] .backup-destination-sidebar,
@@ -261,17 +253,6 @@ h4 {
   letter-spacing: 0;
 }
 
-.app-page {
-  padding: 18px;
-}
-
-.app-shell {
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--line);
-  background: var(--panel);
-  box-shadow: var(--shadow-lg);
-}
-
 .topbar {
   height: 56px;
   padding-inline: 16px;
@@ -318,7 +299,7 @@ h4 {
 }
 
 .app-main {
-  grid-template-columns: 212px minmax(0, 1fr);
+  grid-template-columns: 240px minmax(0, 1fr);
   background: var(--panel-soft);
 }
 
@@ -423,7 +404,6 @@ h4 {
 .dialog-card,
 .card,
 .list-panel,
-.sidebar-block,
 .settings-subcard,
 .backup-operations-sidebar,
 .backup-destination-sidebar,
@@ -444,6 +424,48 @@ h4 {
 
 .auth-card {
   padding: 24px;
+}
+
+.settings-home-card {
+  min-height: min(640px, calc(100dvh - 180px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-home-section {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-home-section h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-md);
+}
+
+.settings-home-spacer {
+  flex: 1;
+  min-height: 4px;
+}
+
+.mobile-settings-links {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.mobile-settings-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 700;
 }
 
 .auth-card h1,
@@ -599,7 +621,7 @@ h4 {
 }
 
 .list-head {
-  margin-bottom: 8px;
+  margin-bottom: 5px;
 }
 
 .list-count {
@@ -655,8 +677,42 @@ h4 {
 }
 
 .card {
-  margin-bottom: 8px;
+  margin-bottom: 10;
   padding: 14px;
+}
+
+.route-stage,
+.sidebar,
+.list-panel,
+.detail-col,
+.log-list,
+.card.log-detail-panel,
+.domain-rules-table,
+.route-stage-fixed {
+  scrollbar-gutter: stable;
+}
+
+.route-stage,
+.sidebar {
+  margin-right: -4px;
+  padding-right: 4px;
+}
+
+.list-panel,
+.detail-col {
+  margin-right: -4px;
+  padding-right: 12px;
+}
+
+.log-list,
+.domain-rules-table {
+  margin-right: -4px;
+  padding-right: calc(0.125rem + 4px);
+}
+
+.card.log-detail-panel {
+  margin-right: -4px;
+  padding-right: 18px;
 }
 
 .card h4,
@@ -687,11 +743,16 @@ h4 {
   color: var(--muted);
 }
 
-.settings-modules-grid,
 .import-export-panels,
 .backup-grid,
 .domain-rules-grid {
-  gap: 10px;
+  gap: 2px 10px;
+}
+
+.settings-modules-grid {
+  --settings-grid-gap: 10px;
+  gap: 2px var(--settings-grid-gap);
+  grid-template-columns: repeat(2, minmax(0, calc((100% - var(--settings-grid-gap)) / 2)));
 }
 
 .settings-module h3 {
@@ -774,6 +835,101 @@ h4 {
   background: transparent;
 }
 
+/* Typography refinement: stronger scan targets for dense vault/admin surfaces. */
+body {
+  font-family: var(--font-sans);
+  font-size: var(--font-base);
+  font-weight: 400;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.side-link,
+.side-group-trigger,
+.side-sub-link,
+.tree-btn,
+.mobile-settings-link,
+.backup-destination-item,
+.backup-browser-entry,
+.sort-menu-item,
+.create-menu-item,
+.nav-layout-option {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.side-link.active,
+.side-group-trigger.active,
+.side-sub-link.active,
+.tree-btn.active,
+.mobile-tab.active,
+.mobile-settings-link.active,
+.nav-layout-option.active {
+  font-weight: 700;
+}
+
+.sidebar-title,
+.list-count,
+.field > span,
+.table th,
+.dialog-warning-kicker,
+.backup-recommendation-group-title {
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.list-title {
+  color: var(--text);
+  font-size: var(--font-base);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.list-sub,
+.detail-sub,
+.backup-destination-meta,
+.totp-code-username,
+.field-help,
+.settings-field-note {
+  font-size: var(--font-sm);
+  line-height: var(--leading-snug);
+}
+
+.btn,
+.input,
+.search-input,
+.user-chip,
+.network-status-badge {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.btn-primary,
+.btn-danger,
+.btn.full,
+.topbar-actions .btn,
+.network-status-badge {
+  font-weight: 700;
+}
+
+.card h4,
+.settings-module h3,
+.section-head h3,
+.section-head h4,
+.detail-title,
+.totp-code-name,
+.backup-destination-name,
+.mobile-sidebar-title {
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
 .toast-item,
 .dialog-card {
   border-radius: var(--radius-lg);
@@ -785,7 +941,6 @@ h4 {
   background: var(--bg-accent);
 }
 
-:root[data-theme='dark'] .app-shell,
 :root[data-theme='dark'] .topbar,
 :root[data-theme='dark'] .app-side,
 :root[data-theme='dark'] .mobile-tabbar,
@@ -793,7 +948,6 @@ h4 {
 :root[data-theme='dark'] .dialog-card,
 :root[data-theme='dark'] .card,
 :root[data-theme='dark'] .list-panel,
-:root[data-theme='dark'] .sidebar-block,
 :root[data-theme='dark'] .settings-subcard,
 :root[data-theme='dark'] .backup-operations-sidebar,
 :root[data-theme='dark'] .backup-destination-sidebar,
@@ -889,6 +1043,36 @@ h4 {
     gap: 8px;
   }
 
+  .route-stage,
+  .sidebar,
+  .list-panel,
+  .detail-col,
+  .log-list,
+  .card.log-detail-panel,
+  .domain-rules-table,
+  .route-stage-fixed {
+    margin-right: 0;
+    scrollbar-gutter: auto;
+  }
+
+  .route-stage,
+  .sidebar {
+    padding-right: 0;
+  }
+
+  .log-list,
+  .domain-rules-table {
+    padding-right: 0.125rem;
+  }
+
+  .card.log-detail-panel {
+    padding-right: 14px;
+  }
+
+  .settings-modules-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .mobile-detail-sheet {
     background: var(--panel-soft);
   }
@@ -909,6 +1093,7 @@ h4 {
   .list-panel {
     padding: 6px;
     border-radius: var(--radius-md);
+    margin-top: 5px;
   }
 
   .list-item {
@@ -1089,7 +1274,6 @@ input[type='file'].input::file-selector-button {
   padding: 12px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-lg);
-  background: var(--panel-soft);
 }
 
 .invite-create-group {
@@ -1122,7 +1306,6 @@ input[type='file'].input::file-selector-button {
 .invite-table th {
   height: 42px;
   padding: 9px 10px;
-  background: var(--panel-soft);
   font-size: 13px;
   font-weight: 800;
 }
@@ -1234,5 +1417,77 @@ input[type='file'].input::file-selector-button {
   .invite-pagination {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
+  }
+}
+
+/* Keep management routes mobile-first after the final polish layer overrides. */
+@media (max-width: 1180px) {
+  .content,
+  .route-stage,
+  .stack,
+  .backup-grid {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .route-stage {
+    overflow-x: hidden;
+  }
+
+  .backup-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 0;
+  }
+
+  .backup-operations-sidebar,
+  .backup-destination-sidebar,
+  .backup-detail-panel {
+    width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .table,
+  .table tbody,
+  .table tr,
+  .table td {
+    display: block;
+    width: 100%;
+  }
+
+  .table thead {
+    display: none;
+  }
+
+  .table {
+    border-spacing: 0;
+  }
+
+  .table tr {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+  }
+
+  .table td {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line-soft);
+    overflow-wrap: anywhere;
+  }
+
+  .table td:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .table td::before {
+    display: block;
+    content: attr(data-label);
+    margin-bottom: 4px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
   }
 }

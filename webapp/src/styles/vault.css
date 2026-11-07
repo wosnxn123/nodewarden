@@ -1,6 +1,10 @@
 .vault-grid {
   @apply grid h-full min-h-0 gap-3 p-0.5;
-  grid-template-columns: 270px minmax(400px, 36%) minmax(400px, 1fr);
+  /* The list and detail panes already scroll internally (overflow: auto), which
+     zeroes their automatic minimum size. Keeping the track minimums at 0 lets the
+     grid fit the content area at any width instead of overflowing the page; wide
+     viewports are unaffected because 36%/1fr were never binding there. */
+  grid-template-columns: 270px minmax(0, 36%) minmax(0, 1fr);
 }
 
 .sidebar,
@@ -21,7 +25,13 @@
 }
 
 .sidebar-title {
-  @apply mb-2 text-[13px] font-bold text-slate-700;
+  @apply mb-2;
+  font-size: var(--font-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--muted);
+  line-height: var(--leading-tight);
 }
 
 .sidebar-title-row {
@@ -41,11 +51,11 @@
 }
 
 .folder-add-btn:hover {
-  color: #1d4ed8;
+  color: var(--primary-hover);
 }
 
 .search-input {
-  @apply h-12 w-full rounded-xl border px-3.5 py-2.5 text-base text-ink outline-none transition;
+  @apply h-12 w-full rounded-xl border px-3.5 py-2.5 text-base text-ink outline-hidden transition;
   background: var(--panel);
   border-color: rgba(74, 103, 150, 0.34);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
@@ -86,17 +96,25 @@
 }
 
 .tree-btn {
-  @apply mb-1 flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-2.5 py-2 text-left transition;
+  @apply mb-1 flex w-full min-w-0 cursor-pointer items-center border-0 bg-transparent px-2.5 py-2 text-left transition;
+  gap: var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  font-weight: 500;
+  line-height: var(--leading-snug);
+  letter-spacing: var(--tracking-normal);
+  color: var(--muted-strong);
 }
 
 .tree-btn:hover {
   background: rgba(37, 99, 235, 0.05);
+  color: var(--text);
 }
 
 .tree-btn.active {
   background: rgba(37, 99, 235, 0.09);
   color: var(--primary-strong);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .tree-icon {
@@ -147,7 +165,7 @@
 }
 
 .folder-sort-btn:hover {
-  color: #1d4ed8;
+  color: var(--primary-hover);
   background: #dbeafe;
   transform: scale(1.06);
 }
@@ -170,29 +188,170 @@
   gap: var(--actions-gap);
 }
 
+.toolbar.actions.duplicates-toolbar {
+  @apply items-center;
+}
+
 .toolbar .btn.small {
-  @apply h-[30px] rounded-full text-xs;
+  @apply h-[32px] rounded-full text-xs;
+}
+
+.duplicate-mode-select {
+  @apply h-8 min-w-[150px] rounded-full py-0 pl-3 pr-6 text-xs;
+  border-color: rgba(74, 103, 150, 0.26);
+  box-shadow: none;
+  line-height: 32px;
+  background-position:
+    calc(100% - 10px) calc(50% - 2px),
+    calc(100% - 6px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+select.input.duplicate-mode-toolbar-select {
+  height: 32px;
+  padding-top: 0;
+  padding-right: 24px;
+  padding-bottom: 0;
+  line-height: 32px;
+  background-position:
+    calc(100% - 10px) calc(50% - 2px),
+    calc(100% - 6px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.duplicate-mode-head-select {
+  @apply h-[34px] w-auto min-w-[156px] max-w-full;
+}
+
+.duplicate-mode-head-menu {
+  @apply min-w-0;
+}
+
+.duplicate-mode-toolbar-select {
+  @apply w-auto max-w-[170px] shrink-0;
 }
 
 .list-head {
-  @apply mb-2 flex items-center gap-2.5;
+  @apply mb-1.5 flex flex-wrap items-center gap-2;
+  min-height: 34px;
 }
 
-.list-head .search-input-wrap {
+.list-head.selection-mode {
+  @apply gap-2;
+}
+
+.list-head.selection-mode > .btn.small {
+  @apply min-w-0 flex-1 justify-center;
+}
+
+.list-head .search-input-wrap,
+.duplicate-mode-head-menu {
   @apply min-w-0 flex-auto;
 }
 
 .list-head .search-input {
-  @apply h-[42px];
+  @apply h-[34px] rounded-[10px] px-3 py-0 text-[13px] font-semibold;
+  line-height: 34px;
 }
 
 .list-head .btn {
-  @apply whitespace-nowrap;
+  @apply h-[34px] whitespace-nowrap rounded-[10px] px-3 py-0 text-[13px];
+}
+
+.list-head .btn,
+.list-head .search-input,
+.list-head .sort-trigger,
+.list-head .list-icon-btn {
+  animation: none !important;
+  transition: none !important;
+  transform: none !important;
+}
+
+.list-head .btn:hover:not(:disabled),
+.list-head .btn:active:not(:disabled) {
+  transform: none !important;
+}
+
+.mobile-vault-filter-row {
+  @apply hidden;
+}
+
+.mobile-vault-filter-control {
+  @apply relative min-w-0;
+}
+
+.mobile-vault-filter-trigger {
+  @apply flex h-[34px] w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-[10px] border px-2.5 py-0 text-left text-[13px] font-semibold;
+  background: var(--panel);
+  border-color: rgba(74, 103, 150, 0.28);
+  color: var(--muted-strong);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+  transition:
+    border-color var(--dur-fast) var(--ease-smooth),
+    background-color var(--dur-fast) var(--ease-smooth),
+    color var(--dur-fast) var(--ease-smooth),
+    box-shadow var(--dur-fast) var(--ease-smooth);
+}
+
+.mobile-vault-filter-trigger:hover,
+.mobile-vault-filter-trigger.active {
+  border-color: rgba(43, 102, 217, 0.46);
+  background: #f8fbff;
+  color: var(--primary-strong);
+}
+
+.mobile-vault-filter-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.mobile-vault-filter-trigger-icon,
+.mobile-vault-filter-item-icon {
+  @apply inline-flex shrink-0 items-center justify-center;
+}
+
+.mobile-vault-filter-trigger-label {
+  @apply min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap;
+}
+
+.mobile-vault-filter-chevron {
+  @apply shrink-0;
+}
+
+.mobile-vault-filter-trigger.active .mobile-vault-filter-chevron {
+  transform: rotate(180deg);
+}
+
+.mobile-vault-filter-menu {
+  @apply left-0 right-auto max-h-[280px] min-w-full overflow-auto;
+  min-width: max(100%, 168px);
+}
+
+.mobile-vault-filter-control:last-child .mobile-vault-filter-menu {
+  @apply left-auto right-0;
+}
+
+.mobile-vault-filter-item {
+  @apply gap-2;
+}
+
+.mobile-vault-filter-item-main {
+  @apply flex min-w-0 items-center gap-2;
+}
+
+.mobile-vault-filter-item-main span:last-child {
+  @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap;
 }
 
 .list-count {
-  @apply shrink-0 whitespace-nowrap text-xs;
-  color: var(--text-muted);
+  @apply shrink-0 whitespace-nowrap;
+  font-size: var(--font-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--muted);
+  line-height: var(--leading-tight);
 }
 
 .list-icon-btn {
@@ -205,6 +364,10 @@
 
 .sort-trigger {
   @apply w-9 min-w-9 justify-center gap-0 p-0;
+}
+
+.sort-trigger.sort-trigger-labeled {
+  @apply h-[34px] w-auto min-w-0 gap-1.5 rounded-[10px] px-3;
 }
 
 .sort-trigger.active {
@@ -248,6 +411,30 @@
   @apply h-3.5 w-3.5 shrink-0;
 }
 
+.desktop-create-menu-wrap {
+  @apply shrink-0;
+}
+
+.desktop-create-trigger {
+  @apply h-[34px] w-[34px] min-w-[34px] gap-0 rounded-[10px] p-0 text-[0px];
+}
+
+.desktop-create-trigger .btn-icon {
+  @apply m-0;
+}
+
+.duplicates-helper-toolbar {
+  @apply justify-start pb-0.5;
+}
+
+.duplicates-helper-toolbar .btn.small {
+  @apply h-[34px] rounded-[10px] px-3 py-0 text-[13px];
+}
+
+.list-count-status {
+  @apply mb-1 pl-1;
+}
+
 .list-panel {
   @apply min-h-0 overflow-auto p-2;
   /* Virtualized rows update top/bottom spacers while scrolling. Chrome's scroll anchoring
@@ -261,6 +448,11 @@
   border-color: var(--line);
   contain: paint;
   overflow-anchor: none;
+}
+
+.list-item.duplicate-group-item {
+  background: hsl(var(--duplicate-group-hue) 84% 94%);
+  border-color: hsl(var(--duplicate-group-hue) 42% 78%);
 }
 
 .list-item::before {
@@ -343,6 +535,11 @@
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06), 0 0 0 1px rgba(37, 99, 235, 0.04);
 }
 
+.list-item.duplicate-group-item:hover {
+  background: hsl(var(--duplicate-group-hue) 88% 92%);
+  border-color: hsl(var(--duplicate-group-hue) 52% 68%);
+}
+
 .list-item:hover::before {
   opacity: 1;
   transform: translateX(0);
@@ -352,6 +549,11 @@
   background: rgba(37, 99, 235, 0.1);
   border-color: rgba(43, 102, 217, 0.26);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+
+.list-item.duplicate-group-item.active {
+  background: hsl(var(--duplicate-group-hue) 88% 89%);
+  border-color: hsl(var(--duplicate-group-hue) 58% 58%);
 }
 
 .list-item.active::before {
@@ -384,7 +586,7 @@
 }
 
 .card-brand-icon {
-  @apply inline-grid h-6 w-9 shrink-0 place-items-center rounded border text-[7px] font-black uppercase leading-none;
+  @apply inline-grid h-6 w-9 shrink-0 place-items-center rounded-sm border text-[7px] font-black uppercase leading-none;
   letter-spacing: 0;
   color: #1e3a8a;
   background: linear-gradient(180deg, #ffffff 0%, #f4f7fb 100%);
@@ -525,7 +727,12 @@
 }
 
 .list-title {
-  @apply flex min-w-0 items-center gap-1.5 text-[15px] font-bold;
+  @apply flex min-w-0 items-center;
+  gap: var(--space-2);
+  font-size: var(--font-base);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
   color: var(--primary-strong);
   transition: color var(--dur-fast) var(--ease-smooth), letter-spacing 220ms var(--ease-out-soft);
 }
@@ -569,7 +776,7 @@
 
 .list-item:hover .list-title,
 .list-item.active .list-title {
-  letter-spacing: -0.012em;
+  letter-spacing: var(--tracking-tighter);
 }
 
 .list-item:hover .list-sub,
@@ -614,11 +821,19 @@
 
 .detail-title {
   @apply m-0 overflow-hidden text-ellipsis whitespace-nowrap;
+  font-size: var(--font-2xl);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tighter);
+  color: var(--text);
 }
 
 .detail-sub {
   @apply mt-2;
-  color: #667085;
+  font-size: var(--font-sm);
+  line-height: var(--leading-relaxed);
+  letter-spacing: var(--tracking-normal);
+  color: var(--muted);
 }
 
 .password-history-link {
@@ -649,7 +864,9 @@
 
 .kv-row {
   @apply grid items-center gap-2.5 py-2.5;
-  grid-template-columns: minmax(0px, 80px) minmax(0, 1fr) auto;
+  /* Floor the value column so the auto-sized actions column wraps its
+     buttons instead of collapsing the value to 0 width. */
+  grid-template-columns: minmax(0px, 80px) minmax(min(35%, 140px), 1fr) auto;
   border-bottom: 1px solid rgba(154, 172, 205, 0.22);
 }
 
@@ -751,7 +968,7 @@
 }
 
 .totp-ring-progress {
-  stroke: #2563eb;
+  stroke: var(--primary);
   stroke-linecap: round;
   transition: stroke-dashoffset 260ms linear, stroke 200ms ease;
 }
@@ -869,7 +1086,7 @@
 
 .totp-codes-list {
   @apply grid w-full items-start gap-2.5;
-  grid-template-columns: repeat(var(--totp-columns, 1), minmax(300px, 1fr));
+  grid-template-columns: repeat(var(--totp-columns, 1), minmax(0, 1fr));
 }
 
 .totp-code-row {
@@ -894,7 +1111,7 @@
 }
 
 .totp-code-main strong {
-  @apply whitespace-nowrap text-[22px] leading-none;
+  @apply min-w-0 whitespace-nowrap text-[22px] leading-none;
   letter-spacing: 0.04em;
 }
 
@@ -1057,4 +1274,9 @@
 .vault-error-state strong {
   @apply text-sm;
   color: var(--danger);
+}
+
+.inline-icon {
+  display: inline;
+  vertical-align: middle;
 }

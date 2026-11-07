@@ -1,11 +1,14 @@
 import { Env, JWTPayload, User } from '../types';
 import { verifyJWT, createJWT, createRefreshToken } from '../utils/jwt';
+import { getRefreshTokenSlidingTtlMs, LIMITS } from '../config/limits';
 import { StorageService } from './storage';
+import {
+  createPasswordVerifier,
+  needsPasswordVerifierUpgrade,
+  performDummyPasswordWork,
+  verifyPasswordVerifier,
+} from './password-verifier';
 
-// Server-side iterations for second-layer hashing.
-// The client already does heavy PBKDF2 (600k iterations).
-// This second layer only needs to be non-trivial, not expensive.
-const SERVER_HASH_ITERATIONS = 100_000;
 const AUTH_CONTEXT_CACHE_TTL_MS = 15 * 1000;
 
 interface CachedUserEntry {
@@ -23,6 +26,23 @@ export interface VerifiedAccessContext {
   user: User;
 }
 
+export type RefreshAccessTokenFailureReason =
+  | 'token_not_found_or_expired'
+  | 'user_missing'
+  | 'user_inactive'
+  | 'security_stamp_mismatch'
+  | 'device_missing'
+  | 'device_session_mismatch';
+
+export type RefreshAccessTokenResult =
+  | { ok: true; accessToken: string; user: User; device: { identifier: string; sessionStamp: string } | null; expiresAt: number }
+  | {
+      ok: false;
+      reason: RefreshAccessTokenFailureReason;
+      userId?: string | null;
+      deviceIdentifier?: string | null;
+    };
+
 export class AuthService {
   private storage: StorageService;
   private static userCache = new Map<string, CachedUserEntry>();
@@ -30,6 +50,25 @@ export class AuthService {
 
   constructor(private env: Env) {
     this.storage = new StorageService(env.DB);
+  }
+
+  static invalidateUserCache(userId: string): void {
+    const normalizedUserId = String(userId || '').trim();
+    if (!normalizedUserId) return;
+    AuthService.userCache.delete(normalizedUserId);
+    const prefix = `${normalizedUserId}:`;
+    for (const key of AuthService.deviceCache.keys()) {
+      if (key.startsWith(prefix)) {
+        AuthService.deviceCache.delete(key);
+      }
+    }
+  }
+
+  static invalidateDeviceCache(userId: string, deviceId: string): void {
+    const normalizedUserId = String(userId || '').trim();
+    const normalizedDeviceId = String(deviceId || '').trim();
+    if (!normalizedUserId || !normalizedDeviceId) return;
+    AuthService.deviceCache.delete(`${normalizedUserId}:${normalizedDeviceId}`);
   }
 
   private readCachedUser(userId: string): User | null | undefined {
@@ -96,50 +135,33 @@ export class AuthService {
     return device;
   }
 
-  // Second-layer hash: PBKDF2-SHA256(clientHash, email-salt, iterations).
-  // Ensures database contents alone cannot be used to authenticate (pass-the-hash defense).
-  // Result is prefixed with "$s$" to distinguish from legacy raw client hashes.
-  async hashPasswordServer(clientHash: string, email: string): Promise<string> {
-    const keyMaterial = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(clientHash),
-      'PBKDF2',
-      false,
-      ['deriveBits']
-    );
-    const salt = new TextEncoder().encode(email.toLowerCase().trim());
-    const bits = await crypto.subtle.deriveBits(
-      { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: SERVER_HASH_ITERATIONS },
-      keyMaterial,
-      256
-    );
-    const bytes = new Uint8Array(bits);
-    let binary = '';
-    for (const b of bytes) binary += String.fromCharCode(b);
-    return '$s$' + btoa(binary);
+  async hashPasswordServer(clientHash: string): Promise<string> {
+    return createPasswordVerifier(clientHash);
   }
 
-  // Verify password: hash the input the same way, then constant-time compare.
-  async verifyPassword(inputHash: string, storedHash: string, email?: string): Promise<boolean> {
-    // New server-hashed passwords are prefixed with "$s$".
-    // Legacy accounts (created before the upgrade) store raw client hashes without prefix.
-    if (email && storedHash.startsWith('$s$')) {
-      const serverHash = await this.hashPasswordServer(inputHash, email);
-      return this.constantTimeEquals(serverHash, storedHash);
-    }
-    // Legacy path: direct constant-time comparison of raw client hashes.
-    return this.constantTimeEquals(inputHash, storedHash);
+  async verifyPassword(inputHash: string, storedHash: string | null, email: string): Promise<boolean> {
+    return verifyPasswordVerifier(inputHash, storedHash, email);
   }
 
-  private constantTimeEquals(a: string, b: string): boolean {
-    const encA = new TextEncoder().encode(a);
-    const encB = new TextEncoder().encode(b);
-    if (encA.length !== encB.length) return false;
-    let diff = 0;
-    for (let i = 0; i < encA.length; i++) {
-      diff |= encA[i] ^ encB[i];
+  async performDummyPasswordWork(inputHash: string): Promise<void> {
+    await performDummyPasswordWork(inputHash);
+  }
+
+  // Call only after a password login and all required second factors succeed.
+  // Auth-request access codes are not password hashes and must never migrate rows.
+  async upgradePasswordVerifier(user: User, inputHash: string): Promise<void> {
+    if (!needsPasswordVerifierUpgrade(user.masterPasswordHash)) return;
+    try {
+      const upgraded = await this.hashPasswordServer(inputHash);
+      if (await this.storage.upgradePasswordVerifier(user.id, user.masterPasswordHash, user.securityStamp, upgraded)) {
+        user.masterPasswordHash = upgraded;
+        AuthService.invalidateUserCache(user.id);
+      }
+    } catch {
+      // Opportunistic migration must not prevent an existing user from logging in.
+      // Retry at the next fully authenticated password login; never log credentials.
+      console.warn('Password verifier upgrade deferred');
     }
-    return diff === 0;
   }
 
   // Generate access token
@@ -157,9 +179,23 @@ export class AuthService {
   }
 
   // Generate refresh token
-  async generateRefreshToken(userId: string, device?: { identifier: string; sessionStamp: string } | null): Promise<string> {
+  async generateRefreshToken(
+    user: User,
+    device?: { identifier: string; sessionStamp: string } | null,
+    clientType: string = 'other'
+  ): Promise<string> {
     const token = createRefreshToken();
-    await this.storage.saveRefreshToken(token, userId, undefined, device?.identifier ?? null, device?.sessionStamp ?? null);
+    const now = Date.now();
+    await this.storage.saveRefreshToken(
+      token,
+      user.id,
+      now + getRefreshTokenSlidingTtlMs(clientType),
+      device?.identifier ?? null,
+      device?.sessionStamp ?? null,
+      user.securityStamp,
+      clientType,
+      now + LIMITS.auth.refreshTokenAbsoluteTtlMs
+    );
     return token;
   }
 
@@ -204,17 +240,26 @@ export class AuthService {
   }
 
   // Refresh access token
-  async refreshAccessToken(
-    refreshToken: string
-  ): Promise<{ accessToken: string; user: User; device: { identifier: string; sessionStamp: string } | null } | null> {
+  async refreshAccessTokenDetailed(refreshToken: string): Promise<RefreshAccessTokenResult> {
     const record = await this.storage.getRefreshTokenRecord(refreshToken);
-    if (!record?.userId) return null;
+    if (!record?.userId) return { ok: false, reason: 'token_not_found_or_expired' };
 
     const user = await this.storage.getUserById(record.userId);
-    if (!user) return null;
+    if (!user) {
+      await this.storage.deleteRefreshToken(refreshToken);
+      return { ok: false, reason: 'user_missing', userId: record.userId, deviceIdentifier: record.deviceIdentifier };
+    }
     if (user.status !== 'active') {
       await this.storage.deleteRefreshToken(refreshToken);
-      return null;
+      return { ok: false, reason: 'user_inactive', userId: user.id, deviceIdentifier: record.deviceIdentifier };
+    }
+
+    if (record.securityStamp && record.securityStamp !== user.securityStamp) {
+      await this.storage.deleteRefreshToken(refreshToken);
+      return { ok: false, reason: 'security_stamp_mismatch', userId: user.id, deviceIdentifier: record.deviceIdentifier };
+    }
+    if (!record.securityStamp) {
+      await this.storage.bindRefreshTokenSecurityStamp(refreshToken, user.securityStamp);
     }
 
     let device: { identifier: string; sessionStamp: string } | null = null;
@@ -222,16 +267,35 @@ export class AuthService {
       const boundDevice = await this.storage.getDevice(user.id, record.deviceIdentifier);
       if (!boundDevice) {
         await this.storage.deleteRefreshToken(refreshToken);
-        return null;
+        return { ok: false, reason: 'device_missing', userId: user.id, deviceIdentifier: record.deviceIdentifier };
       }
-      if (!record.deviceSessionStamp || boundDevice.sessionStamp !== record.deviceSessionStamp) {
+      if (record.deviceSessionStamp && boundDevice.sessionStamp !== record.deviceSessionStamp) {
         await this.storage.deleteRefreshToken(refreshToken);
-        return null;
+        return { ok: false, reason: 'device_session_mismatch', userId: user.id, deviceIdentifier: record.deviceIdentifier };
+      }
+      if (!record.deviceSessionStamp) {
+        await this.storage.bindRefreshTokenDeviceStamp(refreshToken, boundDevice.sessionStamp);
       }
       device = { identifier: boundDevice.deviceIdentifier, sessionStamp: boundDevice.sessionStamp };
     }
 
+    const now = Date.now();
+    const expiresAt = Math.min(
+      now + getRefreshTokenSlidingTtlMs(record.clientType),
+      record.absoluteExpiresAt || (now + LIMITS.auth.refreshTokenAbsoluteTtlMs)
+    );
+    const extended = await this.storage.extendRefreshTokenExpiry(refreshToken, expiresAt, now);
+    if (!extended) {
+      return { ok: false, reason: 'token_not_found_or_expired', userId: user.id, deviceIdentifier: record.deviceIdentifier };
+    }
     const accessToken = await this.generateAccessToken(user, device);
-    return { accessToken, user, device };
+    return { ok: true, accessToken, user, device, expiresAt };
+  }
+
+  async refreshAccessToken(
+    refreshToken: string
+  ): Promise<{ accessToken: string; user: User; device: { identifier: string; sessionStamp: string } | null } | null> {
+    const result = await this.refreshAccessTokenDetailed(refreshToken);
+    return result.ok ? result : null;
   }
 }

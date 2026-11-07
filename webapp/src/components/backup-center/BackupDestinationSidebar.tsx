@@ -63,9 +63,6 @@ export function BackupDestinationSidebar(props: BackupDestinationSidebarProps) {
           <button type="button" className="btn btn-secondary small" onClick={() => props.onAddDestination('s3')}>
             {t('txt_backup_protocol_s3')}
           </button>
-        <button type="button" className="btn btn-secondary small" onClick={() => props.onAddDestination('microsoft_graph')}>
-          Microsoft 365
-        </button>
         </div>
       ) : null}
     </aside>
